@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+# Keep `cargo bench` to the criterion benches (the unit tests have no
+# #[bench] functions).
+bench = false
+
 [dependencies]
 ceres = { package = "cartographer-ceres", path = "../ceres" }
 nalgebra.workspace = true
@@ -27,6 +32,23 @@ approx.workspace = true
 proptest.workspace = true
 rand.workspace = true
 cartographer-sim = { path = "../sim" }
+criterion.workspace = true
+
+[[bench]]
+name = "scan_matching"
+harness = false
+
+[[bench]]
+name = "grid_insertion"
+harness = false
+
+[[bench]]
+name = "optimization"
+harness = false
+
+[[bench]]
+name = "local_slam"
+harness = false
 
 [lints]
 workspace = true

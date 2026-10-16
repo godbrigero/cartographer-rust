@@ -23,10 +23,26 @@ pub fn ray_to_pixel_mask(
     scaled_end: &Array2i,
     subpixel_scale: i32,
 ) -> Vec<Array2i> {
+    let mut pixel_mask = Vec::new();
+    ray_to_pixel_mask_into(scaled_begin, scaled_end, subpixel_scale, &mut pixel_mask);
+    pixel_mask
+}
+
+/// Same as [`ray_to_pixel_mask`], but writes the pixels into `pixel_mask`
+/// (cleared first), so that callers casting many rays can reuse one buffer.
+///
+/// RUST PORT NOTE: added for performance (the C++ returns a fresh
+/// `std::vector` per ray); the produced pixels are identical.
+pub fn ray_to_pixel_mask_into(
+    scaled_begin: &Array2i,
+    scaled_end: &Array2i,
+    subpixel_scale: i32,
+    pixel_mask: &mut Vec<Array2i>,
+) {
     // For simplicity, we order 'scaled_begin' and 'scaled_end' by their x
     // coordinate.
     if scaled_begin.x > scaled_end.x {
-        return ray_to_pixel_mask(scaled_end, scaled_begin, subpixel_scale);
+        return ray_to_pixel_mask_into(scaled_end, scaled_begin, subpixel_scale, pixel_mask);
     }
 
     assert!(
@@ -44,7 +60,7 @@ pub fn ray_to_pixel_mask(
         "Check failed: scaled_end.y() >= 0 ({} vs. 0)",
         scaled_end.y
     );
-    let mut pixel_mask = Vec::new();
+    pixel_mask.clear();
     // Special case: We have to draw a vertical line in full pixels, as
     // 'scaled_begin' and 'scaled_end' have the same full pixel x coordinate.
     if scaled_begin.x / subpixel_scale == scaled_end.x / subpixel_scale {
@@ -55,10 +71,10 @@ pub fn ray_to_pixel_mask(
         pixel_mask.push(current);
         let end_y = scaled_begin.y.max(scaled_end.y) / subpixel_scale;
         while current.y <= end_y {
-            push_if_new(&mut pixel_mask, current);
+            push_if_new(pixel_mask, current);
             current.y += 1;
         }
-        return pixel_mask;
+        return;
     }
 
     let dx = i64::from(scaled_end.x - scaled_begin.x);
@@ -96,11 +112,11 @@ pub fn ray_to_pixel_mask(
     sub_y += dy * i64::from(first_pixel);
     if dy > 0 {
         loop {
-            push_if_new(&mut pixel_mask, current);
+            push_if_new(pixel_mask, current);
             while sub_y > denominator {
                 sub_y -= denominator;
                 current.y += 1;
-                push_if_new(&mut pixel_mask, current);
+                push_if_new(pixel_mask, current);
             }
             current.x += 1;
             if sub_y == denominator {
@@ -115,11 +131,11 @@ pub fn ray_to_pixel_mask(
         }
         // Move from the pixel border on the right to 'scaled_end'.
         sub_y += dy * i64::from(last_pixel);
-        push_if_new(&mut pixel_mask, current);
+        push_if_new(pixel_mask, current);
         while sub_y > denominator {
             sub_y -= denominator;
             current.y += 1;
-            push_if_new(&mut pixel_mask, current);
+            push_if_new(pixel_mask, current);
         }
         assert_ne!(sub_y, denominator, "Check failed: sub_y != denominator");
         assert_eq!(
@@ -127,16 +143,16 @@ pub fn ray_to_pixel_mask(
             scaled_end.y / subpixel_scale,
             "Check failed: current.y() == scaled_end.y() / subpixel_scale"
         );
-        return pixel_mask;
+        return;
     }
 
     // Same for lines non-ascending in y coordinates.
     loop {
-        push_if_new(&mut pixel_mask, current);
+        push_if_new(pixel_mask, current);
         while sub_y < 0 {
             sub_y += denominator;
             current.y -= 1;
-            push_if_new(&mut pixel_mask, current);
+            push_if_new(pixel_mask, current);
         }
         current.x += 1;
         if sub_y == 0 {
@@ -149,11 +165,11 @@ pub fn ray_to_pixel_mask(
         sub_y += dy * 2 * i64::from(subpixel_scale);
     }
     sub_y += dy * i64::from(last_pixel);
-    push_if_new(&mut pixel_mask, current);
+    push_if_new(pixel_mask, current);
     while sub_y < 0 {
         sub_y += denominator;
         current.y -= 1;
-        push_if_new(&mut pixel_mask, current);
+        push_if_new(pixel_mask, current);
     }
     assert_ne!(sub_y, 0, "Check failed: sub_y != 0");
     assert_eq!(
@@ -161,14 +177,13 @@ pub fn ray_to_pixel_mask(
         scaled_end.y / subpixel_scale,
         "Check failed: current.y() == scaled_end.y() / subpixel_scale"
     );
-    pixel_mask
 }
 
 #[cfg(test)]
 mod tests {
     use nalgebra::Vector2;
 
-    use super::ray_to_pixel_mask;
+    use super::{ray_to_pixel_mask, ray_to_pixel_mask_into};
     use crate::mapping::two_d::map_limits::MapLimits;
     use crate::mapping::two_d::xy_index::{Array2i, CellLimits};
 
@@ -344,6 +359,19 @@ mod tests {
                     prop_assert!(d.y.abs() <= 1);
                     prop_assert!(d != Array2i::zeros());
                 }
+            }
+
+            // Reusing a (non-empty) buffer gives exactly the fresh result.
+            #[test]
+            fn into_reused_buffer_matches_fresh_mask(
+                bx in 0i32..20_000, by in 0i32..20_000,
+                ex in 0i32..20_000, ey in 0i32..20_000,
+                scale in prop::sample::select(vec![1, 2, 7, 1000])) {
+                let begin = Array2i::new(bx, by);
+                let end = Array2i::new(ex, ey);
+                let mut buffer = vec![Array2i::new(-1, -1); 3];
+                ray_to_pixel_mask_into(&begin, &end, scale, &mut buffer);
+                prop_assert_eq!(buffer, ray_to_pixel_mask(&begin, &end, scale));
             }
         }
     }

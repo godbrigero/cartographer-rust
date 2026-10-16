@@ -69,7 +69,6 @@ use std::time::{Duration as StdDuration, Instant};
 
 use nalgebra::Quaternion;
 
-use crate::common::fixed_ratio_sampler::FixedRatioSampler;
 use crate::common::task::Task;
 use crate::common::thread_pool::ThreadPoolInterface;
 use crate::common::time::{Time, from_seconds, from_universal};
@@ -79,6 +78,12 @@ use crate::mapping::internal::optimization::optimization_problem_2d::{
     NodeSpec2D, OptimizationProblem2D, SubmapSpec2D,
 };
 use crate::mapping::internal::optimization::optimization_problem_interface::OptimizationProblemInterface;
+use crate::mapping::internal::pose_graph_common::{
+    PoseGraphMetrics, PoseGraphState, TrimmingHandle, can_add_work_item_modifying,
+    constant_data_of, get_interpolated_global_trajectory_pose, get_latest_node_time,
+    is_trajectory_finished, is_trajectory_frozen, lock, read_submap, trajectory_states,
+    update_trajectory_connectivity,
+};
 use crate::mapping::internal::pose_graph_data::{
     DeletionState, InternalSubmapData, PoseGraphData, SubmapState,
 };
@@ -89,7 +94,7 @@ use crate::mapping::pose_graph_interface::{
     Constraint, GlobalSlamOptimizationCallback, LandmarkNode, LandmarkObservation, Pose,
     PoseGraphInterface, SubmapData, SubmapPose, Tag, TrajectoryData, TrajectoryState,
 };
-use crate::mapping::pose_graph_trimmer::{PoseGraphTrimmer, Trimmable};
+use crate::mapping::pose_graph_trimmer::PoseGraphTrimmer;
 use crate::mapping::proto;
 use crate::mapping::submaps::{SharedSubmap, Submap};
 use crate::mapping::trajectory_node::{
@@ -98,54 +103,24 @@ use crate::mapping::trajectory_node::{
 };
 use crate::mapping::two_d::submap_2d::Submap2D;
 use crate::mapping::value_conversion_tables::ValueConversionTables;
-use crate::metrics::family_factory::{FamilyFactory, Labels};
-use crate::metrics::gauge::Gauge;
+use crate::metrics::family_factory::FamilyFactory;
 use crate::sensor::fixed_frame_pose_data::FixedFramePoseData;
 use crate::sensor::imu_data::ImuData;
 use crate::sensor::landmark_data::LandmarkData;
 use crate::sensor::map_by_time::MapByTime;
 use crate::sensor::odometry_data::OdometryData;
 use crate::transform::rigid_transform::{Rigid3d, quaternion_conjugate, quaternion_squared_norm};
-use crate::transform::timestamped_transform::{TimestampedTransform, interpolate};
 use crate::transform::transform::{embed_3d, project_2d, to_rigid3};
-
-/// The C++ file-level metric statics.
-#[derive(Clone, Copy)]
-struct Metrics {
-    work_queue_delay: &'static dyn Gauge,
-    work_queue_size: &'static dyn Gauge,
-    constraints_same_trajectory: &'static dyn Gauge,
-    constraints_different_trajectory: &'static dyn Gauge,
-    active_submaps: &'static dyn Gauge,
-    frozen_submaps: &'static dyn Gauge,
-    deleted_submaps: &'static dyn Gauge,
-}
 
 // RUST PORT NOTE: the C++ `static auto* k...Metric` globals; `None` means the
 // null metrics.
-static METRICS: RwLock<Option<Metrics>> = RwLock::new(None);
+static METRICS: RwLock<Option<PoseGraphMetrics>> = RwLock::new(None);
 
-fn metrics() -> Metrics {
+fn metrics() -> PoseGraphMetrics {
     METRICS
         .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .unwrap_or_else(|| Metrics {
-            work_queue_delay: <dyn Gauge>::null(),
-            work_queue_size: <dyn Gauge>::null(),
-            constraints_same_trajectory: <dyn Gauge>::null(),
-            constraints_different_trajectory: <dyn Gauge>::null(),
-            active_submaps: <dyn Gauge>::null(),
-            frozen_submaps: <dyn Gauge>::null(),
-            deleted_submaps: <dyn Gauge>::null(),
-        })
-}
-
-fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn read_submap(submap: &SharedSubmap<Submap2D>) -> std::sync::RwLockReadGuard<'_, Submap2D> {
-    submap.read().unwrap_or_else(PoisonError::into_inner)
+        .unwrap_or_else(PoseGraphMetrics::null)
 }
 
 /// Eigen's `Quaternion::inverse()`: conjugate / squared norm (zero if the
@@ -160,133 +135,8 @@ fn quaternion_inverse(q: &Quaternion<f64>) -> Quaternion<f64> {
     }
 }
 
-fn constant_data_of(node: &TrajectoryNode) -> &Arc<TrajectoryNodeData> {
-    node.constant_data
-        .as_ref()
-        .expect("Check failed: constant_data != nullptr")
-}
-
 /// The data guarded by the C++ `mutex_`.
-struct State {
-    data: PoseGraphData<Submap2D>,
-    /// List of all trimmers to consult when optimizations finish.
-    trimmers: Vec<Box<dyn PoseGraphTrimmer>>,
-    /// We globally localize a fraction of the nodes from each trajectory.
-    global_localization_samplers: BTreeMap<i32, FixedRatioSampler>,
-    /// Number of nodes added since last loop closure.
-    num_nodes_since_last_loop_closure: i32,
-}
-
-impl State {
-    /// Adds connectivity and sampler for a trajectory if it does not exist.
-    fn add_trajectory_if_needed(&mut self, trajectory_id: i32, options: &proto::PoseGraphOptions) {
-        let trajectory_state = self
-            .data
-            .trajectories_state
-            .entry(trajectory_id)
-            .or_default();
-        assert!(
-            trajectory_state.state != TrajectoryState::Finished,
-            "Check failed: data_.trajectories_state.at(trajectory_id).state != TrajectoryState::FINISHED"
-        );
-        assert!(
-            trajectory_state.state != TrajectoryState::Deleted,
-            "Check failed: data_.trajectories_state.at(trajectory_id).state != TrajectoryState::DELETED"
-        );
-        assert!(
-            trajectory_state.deletion_state == DeletionState::Normal,
-            "Check failed: data_.trajectories_state.at(trajectory_id).deletion_state == \
-             InternalTrajectoryState::DeletionState::NORMAL"
-        );
-        self.data.trajectory_connectivity_state.add(trajectory_id);
-        // Make sure we have a sampler for this trajectory.
-        self.global_localization_samplers
-            .entry(trajectory_id)
-            .or_insert_with(|| FixedRatioSampler::new(options.global_sampling_ratio));
-    }
-}
-
-fn is_trajectory_finished(data: &PoseGraphData<Submap2D>, trajectory_id: i32) -> bool {
-    data.trajectories_state
-        .get(&trajectory_id)
-        .is_some_and(|s| s.state == TrajectoryState::Finished)
-}
-
-fn is_trajectory_frozen(data: &PoseGraphData<Submap2D>, trajectory_id: i32) -> bool {
-    data.trajectories_state
-        .get(&trajectory_id)
-        .is_some_and(|s| s.state == TrajectoryState::Frozen)
-}
-
-fn trajectory_states(data: &PoseGraphData<Submap2D>) -> BTreeMap<i32, TrajectoryState> {
-    data.trajectories_state
-        .iter()
-        .map(|(&id, s)| (id, s.state))
-        .collect()
-}
-
-/// C++ `CanAddWorkItemModifying`. Like C++ (`LOG(FATAL)`), modifying a
-/// finished, deleted or to-be-deleted trajectory panics.
-fn can_add_work_item_modifying(data: &PoseGraphData<Submap2D>, trajectory_id: i32) -> bool {
-    let Some(state) = data.trajectories_state.get(&trajectory_id) else {
-        return true;
-    };
-    if state.state == TrajectoryState::Finished {
-        // TODO(gaschler): Replace all FATAL to WARNING after some testing.
-        panic!(
-            "trajectory_id {trajectory_id} has finished but modification is requested, skipping."
-        );
-    }
-    if state.deletion_state != DeletionState::Normal {
-        panic!(
-            "trajectory_id {trajectory_id} has been scheduled for deletion but modification is \
-             requested, skipping."
-        );
-    }
-    if state.state == TrajectoryState::Deleted {
-        panic!(
-            "trajectory_id {trajectory_id} has been deleted but modification is requested, \
-             skipping."
-        );
-    }
-    true
-}
-
-/// C++ `GetInterpolatedGlobalTrajectoryPose` (requires the state lock).
-fn get_interpolated_global_trajectory_pose(
-    data: &PoseGraphData<Submap2D>,
-    trajectory_id: i32,
-    time: Time,
-) -> Rigid3d {
-    assert!(
-        data.trajectory_nodes
-            .size_of_trajectory_or_zero(trajectory_id)
-            > 0,
-        "Check failed: data_.trajectory_nodes.SizeOfTrajectoryOrZero(trajectory_id) > 0"
-    );
-    let it = data.trajectory_nodes.lower_bound(trajectory_id, time);
-    let begin = data.trajectory_nodes.begin_of_trajectory(trajectory_id);
-    let end = data.trajectory_nodes.end_of_trajectory(trajectory_id);
-    if it == begin {
-        return begin.data().global_pose;
-    }
-    if it == end {
-        return end.to_prev().data().global_pose;
-    }
-    let prev = it.to_prev();
-    interpolate(
-        &TimestampedTransform {
-            time: prev.data().time(),
-            transform: prev.data().global_pose,
-        },
-        &TimestampedTransform {
-            time: it.data().time(),
-            transform: it.data().global_pose,
-        },
-        time,
-    )
-    .transform
-}
+type State = PoseGraphState<Submap2D>;
 
 /// Computes the local to global map frame transform based on the given
 /// `global_submap_poses` (requires the state lock).
@@ -353,34 +203,6 @@ fn get_all_submap_data_under_lock(data: &PoseGraphData<Submap2D>) -> MapById<Sub
         );
     }
     submaps
-}
-
-fn get_latest_node_time(
-    data: &PoseGraphData<Submap2D>,
-    node_id: &NodeId,
-    submap_id: &SubmapId,
-) -> Time {
-    let mut time = constant_data_of(data.trajectory_nodes.at(node_id)).time;
-    let submap_data = data.submap_data.at(submap_id);
-    if let Some(last_submap_node_id) = submap_data.node_ids.iter().next_back() {
-        time = time.max(constant_data_of(data.trajectory_nodes.at(last_submap_node_id)).time);
-    }
-    time
-}
-
-/// Updates the trajectory connectivity structure with a new constraint.
-fn update_trajectory_connectivity(data: &mut PoseGraphData<Submap2D>, constraint: &Constraint) {
-    assert_eq!(
-        constraint.tag,
-        Tag::InterSubmap,
-        "Check failed: constraint.tag == Constraint::INTER_SUBMAP"
-    );
-    let time = get_latest_node_time(data, &constraint.node_id, &constraint.submap_id);
-    data.trajectory_connectivity_state.connect(
-        constraint.node_id.trajectory_id,
-        constraint.submap_id.trajectory_id,
-        time,
-    );
 }
 
 /// Grows the optimization problem to have an entry for every element of
@@ -484,205 +306,29 @@ fn initialize_global_submap_poses(
     vec![front_submap_id, last_submap_id]
 }
 
-/// Allows querying and manipulating the pose graph by the trimmers. The
-/// pose graph's locks are held while this is used.
-///
-/// RUST PORT NOTE: C++ `PoseGraph2D::TrimmingHandle` holds a `PoseGraph2D*`;
-/// here it borrows the locked data, the locked optimization problem and the
-/// constraint builder.
-struct TrimmingHandle<'a> {
+/// The optimized global pose of a submap (`data_.global_submap_poses_2d`),
+/// for the `TrimmingHandle`.
+fn optimized_global_submap_pose(
+    data: &PoseGraphData<Submap2D>,
+    submap_id: &SubmapId,
+) -> Option<Rigid3d> {
+    data.global_submap_poses_2d
+        .get(submap_id)
+        .map(|global_submap_pose| embed_3d(&global_submap_pose.global_pose))
+}
+
+/// Creates the C++ `TrimmingHandle(this)` from the locked parts.
+fn trimming_handle<'a>(
     data: &'a mut PoseGraphData<Submap2D>,
     optimization_problem: &'a mut OptimizationProblem2D,
-    constraint_builder: &'a ConstraintBuilder2D,
-}
-
-impl Trimmable for TrimmingHandle<'_> {
-    fn num_submaps(&self, trajectory_id: i32) -> i32 {
-        self.optimization_problem
-            .submap_data()
-            .size_of_trajectory_or_zero(trajectory_id) as i32
-    }
-
-    fn get_submap_ids(&self, trajectory_id: i32) -> Vec<SubmapId> {
-        self.optimization_problem
-            .submap_data()
-            .trajectory(trajectory_id)
-            .map(|it| it.id)
-            .collect()
-    }
-
-    fn get_optimized_submap_data(&self) -> MapById<SubmapId, SubmapData> {
-        let mut submaps = MapById::new();
-        for submap_id_data in &self.data.submap_data {
-            if submap_id_data.data.state != SubmapState::Finished {
-                continue;
-            }
-            let Some(global_submap_pose) = self.data.global_submap_poses_2d.get(&submap_id_data.id)
-            else {
-                continue;
-            };
-            submaps.insert(
-                &submap_id_data.id,
-                SubmapData {
-                    submap: Some(submap_id_data.data.submap_as_dyn()),
-                    pose: embed_3d(&global_submap_pose.global_pose),
-                },
-            );
-        }
-        submaps
-    }
-
-    fn get_trajectory_nodes(&self) -> &MapById<NodeId, TrajectoryNode> {
-        &self.data.trajectory_nodes
-    }
-
-    fn get_constraints(&self) -> &[Constraint] {
-        &self.data.constraints
-    }
-
-    fn trim_submap(&mut self, submap_id: &SubmapId) {
-        // TODO(hrapp): We have to make sure that the trajectory has been
-        // finished if we want to delete the last submaps.
-        assert!(
-            self.data.submap_data.at(submap_id).state == SubmapState::Finished,
-            "Check failed: parent_->data_.submap_data.at(submap_id).state == SubmapState::kFinished"
-        );
-
-        // Compile all nodes that are still INTRA_SUBMAP constrained to other
-        // submaps once the submap with 'submap_id' is gone.
-        // We need to use node_ids instead of constraints here to be also
-        // compatible with frozen trajectories that don't have
-        // intra-constraints.
-        let mut nodes_to_retain: BTreeSet<NodeId> = BTreeSet::new();
-        for submap_data in &self.data.submap_data {
-            if submap_data.id != *submap_id {
-                nodes_to_retain.extend(submap_data.data.node_ids.iter().copied());
-            }
-        }
-
-        // Remove all nodes that are exlusively associated to 'submap_id'.
-        let nodes_to_remove: BTreeSet<NodeId> = self
-            .data
-            .submap_data
-            .at(submap_id)
-            .node_ids
-            .difference(&nodes_to_retain)
-            .copied()
-            .collect();
-
-        // Remove all 'data_.constraints' related to 'submap_id'.
-        self.data
-            .constraints
-            .retain(|constraint| constraint.submap_id != *submap_id);
-
-        // Remove all 'data_.constraints' related to 'nodes_to_remove'.
-        // If the removal lets other submaps lose all their inter-submap
-        // constraints, delete their corresponding constraint submap matchers
-        // to save memory.
-        {
-            let mut constraints = Vec::new();
-            let mut other_submap_ids_losing_constraints: BTreeSet<SubmapId> = BTreeSet::new();
-            for constraint in &self.data.constraints {
-                if !nodes_to_remove.contains(&constraint.node_id) {
-                    constraints.push(*constraint);
-                } else {
-                    // A constraint to another submap will be removed, mark it
-                    // as affected.
-                    other_submap_ids_losing_constraints.insert(constraint.submap_id);
-                }
-            }
-            self.data.constraints = constraints;
-            // Go through the remaining constraints to ensure we only delete
-            // scan matchers of other submaps that have no inter-submap
-            // constraints left.
-            for constraint in &self.data.constraints {
-                if constraint.tag == Tag::IntraSubmap {
-                    continue;
-                }
-                // This submap still has inter-submap constraints - ignore it.
-                other_submap_ids_losing_constraints.remove(&constraint.submap_id);
-            }
-            // Delete scan matchers of the submaps that lost all constraints.
-            // TODO(wohe): An improvement to this implementation would be to
-            // add the caching logic at the constraint builder which could keep
-            // around only recently used scan matchers.
-            for other_submap_id in &other_submap_ids_losing_constraints {
-                self.constraint_builder.delete_scan_matcher(other_submap_id);
-            }
-        }
-
-        // Mark the submap with 'submap_id' as trimmed and remove its data.
-        assert!(
-            self.data.submap_data.at(submap_id).state == SubmapState::Finished,
-            "Check failed: parent_->data_.submap_data.at(submap_id).state == SubmapState::kFinished"
-        );
-        self.data.submap_data.trim(submap_id);
-        self.constraint_builder.delete_scan_matcher(submap_id);
-        self.optimization_problem.trim_submap(submap_id);
-
-        // We have one submap less, update the gauge metrics.
-        let metrics = metrics();
-        metrics.deleted_submaps.increment();
-        if is_trajectory_frozen(self.data, submap_id.trajectory_id) {
-            metrics.frozen_submaps.decrement();
-        } else {
-            metrics.active_submaps.decrement();
-        }
-
-        // Remove the 'nodes_to_remove' from the pose graph and the
-        // optimization problem.
-        for node_id in &nodes_to_remove {
-            self.data.trajectory_nodes.trim(node_id);
-            self.optimization_problem.trim_trajectory_node(node_id);
-        }
-    }
-
-    fn is_finished(&self, trajectory_id: i32) -> bool {
-        is_trajectory_finished(self.data, trajectory_id)
-    }
-
-    fn set_trajectory_state(&mut self, trajectory_id: i32, state: TrajectoryState) {
-        self.data
-            .trajectories_state
-            .entry(trajectory_id)
-            .or_default()
-            .state = state;
-    }
-}
-
-/// Deletes trajectories waiting for deletion. Must not be called during
-/// constraint search. Requires the optimization problem and state locks.
-fn delete_trajectories_if_needed(
-    data: &mut PoseGraphData<Submap2D>,
-    optimization_problem: &mut OptimizationProblem2D,
-    constraint_builder: &ConstraintBuilder2D,
-) {
-    let trajectory_ids: Vec<i32> = data
-        .trajectories_state
-        .iter()
-        .filter(|(_, state)| state.deletion_state == DeletionState::WaitForDeletion)
-        .map(|(&trajectory_id, _)| trajectory_id)
-        .collect();
-    for trajectory_id in trajectory_ids {
-        // TODO(gaschler): Consider directly deleting from data_, which may be
-        // more complete.
-        {
-            let mut trimming_handle = TrimmingHandle {
-                data: &mut *data,
-                optimization_problem: &mut *optimization_problem,
-                constraint_builder,
-            };
-            let submap_ids = trimming_handle.get_submap_ids(trajectory_id);
-            for submap_id in &submap_ids {
-                trimming_handle.trim_submap(submap_id);
-            }
-        }
-        let state = data
-            .trajectories_state
-            .get_mut(&trajectory_id)
-            .expect("trajectory state exists");
-        state.state = TrajectoryState::Deleted;
-        state.deletion_state = DeletionState::Normal;
+    delete_scan_matcher: &'a dyn Fn(&SubmapId),
+) -> TrimmingHandle<'a, Submap2D, OptimizationProblem2D> {
+    TrimmingHandle {
+        data,
+        optimization_problem,
+        delete_scan_matcher,
+        optimized_global_submap_pose,
+        metrics: metrics(),
     }
 }
 
@@ -1048,17 +694,12 @@ impl Inner {
             for constraint in result {
                 update_trajectory_connectivity(data, constraint);
             }
-            delete_trajectories_if_needed(
-                data,
-                &mut optimization_problem,
-                &self.constraint_builder,
-            );
+            let delete_scan_matcher =
+                |submap_id: &SubmapId| self.constraint_builder.delete_scan_matcher(submap_id);
             {
-                let mut trimming_handle = TrimmingHandle {
-                    data: &mut *data,
-                    optimization_problem: &mut optimization_problem,
-                    constraint_builder: &self.constraint_builder,
-                };
+                let mut trimming_handle =
+                    trimming_handle(data, &mut optimization_problem, &delete_scan_matcher);
+                trimming_handle.delete_trajectories_if_needed();
                 for trimmer in trimmers.iter_mut() {
                     trimmer.trim(&mut trimming_handle);
                 }
@@ -1068,25 +709,7 @@ impl Inner {
             *num_nodes_since_last_loop_closure = 0;
 
             // Update the gauges that count the current number of constraints.
-            let mut inter_constraints_same_trajectory = 0.;
-            let mut inter_constraints_different_trajectory = 0.;
-            for constraint in &data.constraints {
-                if constraint.tag == Tag::IntraSubmap {
-                    continue;
-                }
-                if constraint.node_id.trajectory_id == constraint.submap_id.trajectory_id {
-                    inter_constraints_same_trajectory += 1.;
-                } else {
-                    inter_constraints_different_trajectory += 1.;
-                }
-            }
-            let metrics = metrics();
-            metrics
-                .constraints_same_trajectory
-                .set(inter_constraints_same_trajectory);
-            metrics
-                .constraints_different_trajectory
-                .set(inter_constraints_different_trajectory);
+            metrics().update_constraint_gauges(&data.constraints);
         }
 
         self.drain_work_queue();
@@ -1316,12 +939,7 @@ impl PoseGraph2D {
             weak_self: weak_self.clone(),
             global_slam_optimization_callback: Mutex::new(None),
             optimization_problem: Mutex::new(optimization_problem),
-            state: Mutex::new(State {
-                data: PoseGraphData::default(),
-                trimmers: Vec::new(),
-                global_localization_samplers: BTreeMap::new(),
-                num_nodes_since_last_loop_closure: 0,
-            }),
+            state: Mutex::new(PoseGraphState::new()),
             work_queue: Mutex::new(None),
             work_queue_drained: Condvar::new(),
             constraint_builder: ConstraintBuilder2D::new(
@@ -1405,48 +1023,9 @@ impl PoseGraph2D {
 
     /// Registers the metrics with `family_factory`.
     pub fn register_metrics(family_factory: &mut dyn FamilyFactory) {
-        let labels = |pairs: &[(&str, &str)]| -> Labels {
-            pairs
-                .iter()
-                .map(|&(k, v)| (k.to_string(), v.to_string()))
-                .collect()
-        };
-        let latency = family_factory.new_gauge_family(
-            "mapping_2d_pose_graph_work_queue_delay",
-            "Age of the oldest entry in the work queue in seconds",
+        *METRICS.write().unwrap_or_else(PoisonError::into_inner) = Some(
+            PoseGraphMetrics::register(family_factory, "mapping_2d_pose_graph"),
         );
-        let work_queue_delay = latency.add(&Labels::new());
-        let queue_size = family_factory.new_gauge_family(
-            "mapping_2d_pose_graph_work_queue_size",
-            "Number of items in the work queue",
-        );
-        let work_queue_size = queue_size.add(&Labels::new());
-        let constraints = family_factory.new_gauge_family(
-            "mapping_2d_pose_graph_constraints",
-            "Current number of constraints in the pose graph",
-        );
-        let constraints_different_trajectory = constraints.add(&labels(&[
-            ("tag", "inter_submap"),
-            ("trajectory", "different"),
-        ]));
-        let constraints_same_trajectory =
-            constraints.add(&labels(&[("tag", "inter_submap"), ("trajectory", "same")]));
-        let submaps = family_factory.new_gauge_family(
-            "mapping_2d_pose_graph_submaps",
-            "Number of submaps in the pose graph.",
-        );
-        let active_submaps = submaps.add(&labels(&[("state", "active")]));
-        let frozen_submaps = submaps.add(&labels(&[("state", "frozen")]));
-        let deleted_submaps = submaps.add(&labels(&[("state", "deleted")]));
-        *METRICS.write().unwrap_or_else(PoisonError::into_inner) = Some(Metrics {
-            work_queue_delay,
-            work_queue_size,
-            constraints_same_trajectory,
-            constraints_different_trajectory,
-            active_submaps,
-            frozen_submaps,
-            deleted_submaps,
-        });
     }
 }
 

@@ -54,6 +54,7 @@ pub use internal::three_d::imu_integration::{
 };
 pub use internal::three_d::local_trajectory_builder_3d::LocalTrajectoryBuilder3D;
 pub use internal::three_d::local_trajectory_builder_options_3d::create_local_trajectory_builder_options_3d;
+pub use internal::three_d::pose_graph_3d::PoseGraph3D;
 pub use internal::three_d::rotation_parameterization::{
     ConstantYawQuaternionPlus, YawOnlyQuaternionPlus,
 };

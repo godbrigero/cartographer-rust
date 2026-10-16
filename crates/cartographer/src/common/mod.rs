@@ -5,6 +5,7 @@ pub mod configuration_file_resolver;
 pub mod fixed_ratio_sampler;
 pub mod histogram;
 pub mod internal;
+pub mod lua;
 pub mod lua_parameter_dictionary;
 pub mod math;
 pub mod port;

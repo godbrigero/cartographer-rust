@@ -24,6 +24,7 @@ protox.workspace = true
 approx.workspace = true
 proptest.workspace = true
 rand.workspace = true
+cartographer-sim = { path = "../sim" }
 
 [lints]
 workspace = true

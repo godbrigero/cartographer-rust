@@ -5,6 +5,7 @@ use nalgebra::{Quaternion, Vector3};
 use crate::common::internal::ceres_solver_options::create_ceres_solver_options_proto;
 use crate::common::lua_parameter_dictionary::LuaParameterDictionary;
 use crate::common::time::{Time, from_seconds};
+use crate::mapping::internal::imu_based_pose_extrapolator::ImuBasedPoseExtrapolator;
 use crate::mapping::pose_extrapolator::PoseExtrapolator;
 use crate::mapping::proto;
 use crate::sensor::imu_data::ImuData;
@@ -137,12 +138,11 @@ pub fn create_with_imu_data(
 ) -> Box<dyn PoseExtrapolatorInterface> {
     assert!(!imu_data.is_empty(), "Check failed: !imu_data.empty()");
     if options.use_imu_based {
-        // PENDING(imu_based_pose_extrapolator): call
-        // `ImuBasedPoseExtrapolator::initialize_with_imu(
-        //     &options.imu_based.unwrap_or_default(), imu_data, initial_poses)`
-        // once `mapping/internal/imu_based_pose_extrapolator` is ported.
-        let _ = initial_poses;
-        panic!("ImuBasedPoseExtrapolator not ported yet (pose_extrapolator.use_imu_based = true)");
+        ImuBasedPoseExtrapolator::initialize_with_imu(
+            &options.imu_based.unwrap_or_default(),
+            imu_data,
+            initial_poses,
+        )
     } else {
         let constant_velocity = options.constant_velocity.unwrap_or_default();
         Box::new(PoseExtrapolator::initialize_with_imu(
@@ -236,10 +236,48 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ImuBasedPoseExtrapolator not ported yet")]
-    fn create_with_imu_data_imu_based_is_pending() {
+    fn create_with_imu_data_imu_based() {
         let mut options = create_pose_extrapolator_options(&make_dictionary(OPTIONS_LUA));
         options.use_imu_based = true;
-        create_with_imu_data(&options, &[ImuData::default()], &[]);
+        let time = from_universal(1000);
+        let imu = [
+            ImuData {
+                time: from_universal(500),
+                linear_acceleration: Vector3::new(0., 0., 9.8),
+                angular_velocity: Vector3::zeros(),
+            },
+            ImuData {
+                time,
+                linear_acceleration: Vector3::new(1., 0., 9.8),
+                angular_velocity: Vector3::zeros(),
+            },
+        ];
+        // Without initial poses, a gravity-aligned pose at the last IMU time.
+        let mut extrapolator =
+            <dyn PoseExtrapolatorInterface>::create_with_imu_data(&options, &imu, &[]);
+        assert_eq!(extrapolator.get_last_pose_time(), time);
+        let gravity = extrapolator.estimate_gravity_orientation(time);
+        let up = quaternion_rotate(&gravity, &Vector3::new(1., 0., 9.8).normalize());
+        assert!((up - Vector3::z()).norm() < 1e-9);
+
+        // With initial poses, only those strictly after the first IMU sample
+        // are used (the constant-velocity extrapolator would ignore them).
+        let initial_poses = [
+            TimestampedTransform {
+                time: from_universal(500),
+                transform: Rigid3d::identity(),
+            },
+            TimestampedTransform {
+                time: from_universal(700),
+                transform: Rigid3d::from_translation(Vector3::new(1., 2., 3.)),
+            },
+        ];
+        let mut extrapolator =
+            <dyn PoseExtrapolatorInterface>::create_with_imu_data(&options, &imu, &initial_poses);
+        assert_eq!(extrapolator.get_last_pose_time(), from_universal(700));
+        assert_eq!(
+            *extrapolator.extrapolate_pose(time).translation(),
+            Vector3::new(1., 2., 3.)
+        );
     }
 }

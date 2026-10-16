@@ -8,3 +8,9 @@
 pub mod proto {
     pub use crate::protos::cartographer::mapping::constraints::proto::*;
 }
+
+pub use crate::mapping::internal::constraints::constraint_builder::create_constraint_builder_options;
+pub use crate::mapping::internal::constraints::constraint_builder_2d::{
+    ConstraintBuilder2D, compute_submap_pose,
+};
+pub use crate::mapping::internal::constraints::constraint_builder_3d::ConstraintBuilder3D;

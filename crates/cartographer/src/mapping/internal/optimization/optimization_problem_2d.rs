@@ -348,7 +348,7 @@ impl OptimizationProblem2D {
     /// Creates an empty problem.
     pub fn new(options: &proto::OptimizationProblemOptions) -> Self {
         OptimizationProblem2D {
-            options: options.clone(),
+            options: *options,
             node_data: MapById::new(),
             submap_data: MapById::new(),
             landmark_data: BTreeMap::new(),
@@ -693,5 +693,688 @@ impl OptimizationProblemInterface for OptimizationProblem2D {
 
     fn odometry_data(&self) -> &MapByTime<OdometryData> {
         &self.odometry_data
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::FRAC_PI_2;
+
+    use nalgebra::Vector3;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    use super::*;
+    use crate::common::internal::testing::lua_parameter_dictionary_test_helpers::make_dictionary;
+    use crate::common::time::{from_seconds, from_universal};
+    use crate::mapping::internal::optimization::optimization_problem_options::create_optimization_problem_options;
+    use crate::transform::rigid_transform::quaternion_identity;
+    use crate::transform::transform::get_angle;
+
+    fn create_options(odometry_and_local_slam_weight: f64) -> proto::OptimizationProblemOptions {
+        let dictionary = make_dictionary(&format!(
+            r#"
+            return {{
+              huber_scale = 1e1,
+              acceleration_weight = 1.1e2,
+              rotation_weight = 1.6e4,
+              local_slam_pose_translation_weight = {odometry_and_local_slam_weight:e},
+              local_slam_pose_rotation_weight = {odometry_and_local_slam_weight:e},
+              odometry_translation_weight = {odometry_and_local_slam_weight:e},
+              odometry_rotation_weight = {odometry_and_local_slam_weight:e},
+              fixed_frame_pose_translation_weight = 1e1,
+              fixed_frame_pose_rotation_weight = 1e2,
+              fixed_frame_pose_use_tolerant_loss = false,
+              fixed_frame_pose_tolerant_loss_param_a = 1,
+              fixed_frame_pose_tolerant_loss_param_b = 1,
+              log_solver_summary = true,
+              use_online_imu_extrinsics_in_3d = true,
+              fix_z_in_3d = false,
+              ceres_solver_options = {{
+                use_nonmonotonic_steps = false,
+                max_num_iterations = 50,
+                num_threads = 7,
+              }},
+            }}"#
+        ));
+        create_optimization_problem_options(&dictionary)
+    }
+
+    fn pose(x: f64, y: f64, theta: f64) -> Rigid2d {
+        Rigid2d::new(Vector2::new(x, y), theta)
+    }
+
+    fn node(time: Time, local_pose_2d: Rigid2d, global_pose_2d: Rigid2d) -> NodeSpec2D {
+        NodeSpec2D {
+            time,
+            local_pose_2d,
+            global_pose_2d,
+            gravity_alignment: quaternion_identity(),
+        }
+    }
+
+    fn node_time(index: i32) -> Time {
+        from_universal(0) + from_seconds(0.1 * f64::from(index))
+    }
+
+    fn constraint(submap_id: SubmapId, node_id: NodeId, zbar_ij: Rigid2d, tag: Tag) -> Constraint {
+        Constraint {
+            submap_id,
+            node_id,
+            pose: Pose {
+                zbar_ij: embed_3d(&zbar_ij),
+                translation_weight: 1e3,
+                rotation_weight: 1e3,
+            },
+            tag,
+        }
+    }
+
+    fn active(trajectory_ids: &[i32]) -> BTreeMap<i32, TrajectoryState> {
+        trajectory_ids
+            .iter()
+            .map(|&id| (id, TrajectoryState::Active))
+            .collect()
+    }
+
+    fn pose_error(a: &Rigid2d, b: &Rigid2d) -> (f64, f64) {
+        let delta = a.inverse() * *b;
+        (delta.translation().norm(), delta.normalized_angle().abs())
+    }
+
+    const NODES_PER_SIDE: i32 = 10;
+    const NUM_NODES: i32 = 4 * NODES_PER_SIDE;
+
+    /// Ground truth of a square loop of 1 m steps, turning by 90 degrees
+    /// after every side.
+    fn square_ground_truth() -> Vec<Rigid2d> {
+        let mut poses = vec![Rigid2d::identity()];
+        for i in 1..NUM_NODES {
+            let turn = if i % NODES_PER_SIDE == 0 {
+                FRAC_PI_2
+            } else {
+                0.
+            };
+            let increment = pose(1., 0., 0.) * pose(0., 0., turn);
+            poses.push(poses[(i - 1) as usize] * increment);
+        }
+        poses
+    }
+
+    /// Sets up the square loop: one submap per side (at the ground truth pose
+    /// of its first node) with exact intra-submap constraints to its nodes,
+    /// exact loop closures from each submap to the last node of the previous
+    /// side, and noisy odometry and local SLAM poses. The initial global
+    /// poses are dead reckoning from the noisy odometry.
+    fn set_up_square_loop(problem: &mut OptimizationProblem2D) -> (Vec<Rigid2d>, Vec<Constraint>) {
+        let mut rng = StdRng::seed_from_u64(1234);
+        let ground_truth = square_ground_truth();
+        let noisy_increment = |rng: &mut StdRng, i: usize| {
+            let truth = ground_truth[i - 1].inverse() * ground_truth[i];
+            truth
+                * pose(
+                    rng.random_range(-0.05..0.05),
+                    rng.random_range(-0.05..0.05),
+                    rng.random_range(-0.03..0.03),
+                )
+        };
+        let mut odometry = vec![Rigid2d::identity()];
+        let mut local_slam = vec![Rigid2d::identity()];
+        for i in 1..ground_truth.len() {
+            let odometry_increment = noisy_increment(&mut rng, i);
+            odometry.push(odometry[i - 1] * odometry_increment);
+            let local_slam_increment = noisy_increment(&mut rng, i);
+            local_slam.push(local_slam[i - 1] * local_slam_increment);
+        }
+        for i in 0..NUM_NODES {
+            let index = i as usize;
+            problem.add_odometry_data(
+                0,
+                &OdometryData {
+                    time: node_time(i),
+                    pose: embed_3d(&odometry[index]),
+                },
+            );
+            problem.add_trajectory_node(0, &node(node_time(i), local_slam[index], odometry[index]));
+        }
+        for side in 0..4 {
+            let first_node = (side * NODES_PER_SIDE) as usize;
+            // Submap 0 is fixed at its ground truth; the others start at the
+            // dead-reckoned pose.
+            let initial = if side == 0 {
+                ground_truth[first_node]
+            } else {
+                odometry[first_node]
+            };
+            problem.add_submap(0, &initial);
+        }
+
+        let mut constraints = Vec::new();
+        for side in 0..4 {
+            let submap_id = SubmapId::new(0, side);
+            let submap_pose = ground_truth[(side * NODES_PER_SIDE) as usize];
+            for j in side * NODES_PER_SIDE..(side + 1) * NODES_PER_SIDE {
+                constraints.push(constraint(
+                    submap_id,
+                    NodeId::new(0, j),
+                    submap_pose.inverse() * ground_truth[j as usize],
+                    Tag::IntraSubmap,
+                ));
+            }
+            // Loop closure to the last node of the previous side (for side 0
+            // this closes the square).
+            let previous = (side * NODES_PER_SIDE + NUM_NODES - 1) % NUM_NODES;
+            constraints.push(constraint(
+                submap_id,
+                NodeId::new(0, previous),
+                submap_pose.inverse() * ground_truth[previous as usize],
+                Tag::InterSubmap,
+            ));
+        }
+        (ground_truth, constraints)
+    }
+
+    fn max_errors(problem: &OptimizationProblem2D, ground_truth: &[Rigid2d]) -> (f64, f64) {
+        ground_truth
+            .iter()
+            .enumerate()
+            .map(|(i, gt)| {
+                pose_error(
+                    gt,
+                    &problem
+                        .node_data()
+                        .at(&NodeId::new(0, i as i32))
+                        .global_pose_2d,
+                )
+            })
+            .fold((0., 0.), |(t, r), (dt, dr)| (t.max(dt), r.max(dr)))
+    }
+
+    #[test]
+    fn square_loop_converges_to_ground_truth() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1.));
+        let (ground_truth, constraints) = set_up_square_loop(&mut problem);
+        let (translation_error_before, _) = max_errors(&problem, &ground_truth);
+        assert!(translation_error_before > 0.3, "{translation_error_before}");
+
+        problem.solve(&constraints, &active(&[0]), &BTreeMap::new());
+
+        let (translation_error, rotation_error) = max_errors(&problem, &ground_truth);
+        assert!(translation_error < 1e-4, "{translation_error}");
+        assert!(rotation_error < 1e-4, "{rotation_error}");
+        for side in 0..4 {
+            let (translation_error, rotation_error) = pose_error(
+                &ground_truth[(side * NODES_PER_SIDE) as usize],
+                &problem
+                    .submap_data()
+                    .at(&SubmapId::new(0, side))
+                    .global_pose,
+            );
+            assert!(translation_error < 1e-4, "{translation_error}");
+            assert!(rotation_error < 1e-4, "{rotation_error}");
+        }
+        // The first submap is constant.
+        assert_eq!(
+            problem.submap_data().at(&SubmapId::new(0, 0)).global_pose,
+            Rigid2d::identity()
+        );
+    }
+
+    #[test]
+    fn square_loop_without_loop_closures_follows_odometry() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1.));
+        let (ground_truth, constraints) = set_up_square_loop(&mut problem);
+        let intra_submap_constraints: Vec<Constraint> = constraints
+            .into_iter()
+            .filter(|c| c.tag == Tag::IntraSubmap)
+            .collect();
+        problem.solve(&intra_submap_constraints, &active(&[0]), &BTreeMap::new());
+        let (translation_error, _) = max_errors(&problem, &ground_truth);
+        assert!(translation_error > 1e-2, "{translation_error}");
+    }
+
+    #[test]
+    fn frozen_trajectory_is_unchanged() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        for i in 0..5 {
+            let p = pose(f64::from(i), 0., 0.);
+            problem.add_trajectory_node(0, &node(node_time(i), p, p * pose(0.1, -0.1, 0.05)));
+        }
+        let frozen_submap = pose(3., 4., 0.5);
+        problem.add_submap(1, &frozen_submap);
+        problem.add_submap(1, &(frozen_submap * pose(2., 0., 0.)));
+        let frozen_nodes: Vec<Rigid2d> = (0..5)
+            .map(|i| frozen_submap * pose(f64::from(i), 0., 0.1))
+            .collect();
+        for (i, p) in frozen_nodes.iter().enumerate() {
+            problem.add_trajectory_node(1, &node(node_time(i as i32), *p, *p));
+        }
+        let mut constraints = Vec::new();
+        for i in 0..5 {
+            constraints.push(constraint(
+                SubmapId::new(0, 0),
+                NodeId::new(0, i),
+                pose(f64::from(i), 0., 0.),
+                Tag::IntraSubmap,
+            ));
+            // Inconsistent constraints pulling on the frozen trajectory.
+            constraints.push(constraint(
+                SubmapId::new(0, 0),
+                NodeId::new(1, i),
+                pose(f64::from(i), 1., 0.),
+                Tag::InterSubmap,
+            ));
+            constraints.push(constraint(
+                SubmapId::new(1, 1),
+                NodeId::new(0, i),
+                Rigid2d::identity(),
+                Tag::InterSubmap,
+            ));
+        }
+        let mut states = active(&[0]);
+        states.insert(1, TrajectoryState::Frozen);
+        problem.solve(&constraints, &states, &BTreeMap::new());
+
+        assert_eq!(
+            problem.submap_data().at(&SubmapId::new(1, 0)).global_pose,
+            frozen_submap
+        );
+        assert_eq!(
+            problem.submap_data().at(&SubmapId::new(1, 1)).global_pose,
+            frozen_submap * pose(2., 0., 0.)
+        );
+        for (i, p) in frozen_nodes.iter().enumerate() {
+            let optimized = problem
+                .node_data()
+                .at(&NodeId::new(1, i as i32))
+                .global_pose_2d;
+            assert_eq!(optimized.translation(), p.translation());
+            assert_eq!(optimized.rotation().angle(), p.normalized_angle());
+        }
+        // The active trajectory moved.
+        let (translation_error, _) = pose_error(
+            &pose(1., 0., 0.),
+            &problem.node_data().at(&NodeId::new(0, 1)).global_pose_2d,
+        );
+        assert!(translation_error < 0.5, "{translation_error}");
+        assert_ne!(
+            problem.node_data().at(&NodeId::new(0, 1)).global_pose_2d,
+            pose(1., 0., 0.) * pose(0.1, -0.1, 0.05)
+        );
+    }
+
+    /// Two exactly constrained nodes at (0, 0) and (2, 0) at t = 0 s and 1 s
+    /// and a landmark observed at t = 0.5 s.
+    fn set_up_landmark_problem(
+        landmark: &Rigid3d,
+        global_landmark_pose: Option<Rigid3d>,
+        frozen: bool,
+    ) -> (
+        OptimizationProblem2D,
+        Vec<Constraint>,
+        BTreeMap<String, LandmarkNode>,
+    ) {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        let mut constraints = Vec::new();
+        for i in 0..2 {
+            let p = pose(2. * f64::from(i), 0., 0.);
+            problem.add_trajectory_node(
+                0,
+                &node(from_universal(0) + from_seconds(f64::from(i)), p, p),
+            );
+            constraints.push(constraint(
+                SubmapId::new(0, 0),
+                NodeId::new(0, i),
+                p,
+                Tag::IntraSubmap,
+            ));
+        }
+        // The interpolated tracking pose at t = 0.5 s.
+        let tracking = Rigid3d::from_translation(Vector3::new(1., 0., 0.));
+        let mut landmark_nodes = BTreeMap::new();
+        landmark_nodes.insert(
+            "landmark".to_string(),
+            LandmarkNode {
+                landmark_observations: vec![LandmarkObservation {
+                    trajectory_id: 0,
+                    time: from_universal(0) + from_seconds(0.5),
+                    landmark_to_tracking_transform: tracking.inverse() * *landmark,
+                    translation_weight: 1e3,
+                    rotation_weight: 1e3,
+                }],
+                global_landmark_pose,
+                frozen,
+            },
+        );
+        (problem, constraints, landmark_nodes)
+    }
+
+    #[test]
+    fn landmark_is_estimated() {
+        let landmark = embed_3d(&pose(1., 3., 0.4));
+        let (mut problem, constraints, landmark_nodes) =
+            set_up_landmark_problem(&landmark, None, false);
+        problem.solve(&constraints, &active(&[0]), &landmark_nodes);
+        let estimated = problem.landmark_data()["landmark"];
+        assert!(
+            (estimated.translation() - landmark.translation()).norm() < 1e-6,
+            "{estimated:?}"
+        );
+        assert!(
+            get_angle(&(landmark.inverse() * estimated)) < 1e-6,
+            "{estimated:?}"
+        );
+    }
+
+    #[test]
+    fn frozen_landmark_is_unchanged() {
+        let landmark = embed_3d(&pose(1., 3., 0.4));
+        let frozen_pose = embed_3d(&pose(1.5, 2.5, 0.2));
+        let (mut problem, constraints, landmark_nodes) =
+            set_up_landmark_problem(&landmark, Some(frozen_pose), true);
+        problem.solve(&constraints, &active(&[0]), &landmark_nodes);
+        assert_eq!(problem.landmark_data()["landmark"], frozen_pose);
+    }
+
+    #[test]
+    #[should_panic(expected = "has a single node")]
+    fn landmark_observed_by_single_node_trajectory_panics() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        problem.add_trajectory_node(
+            0,
+            &node(from_universal(10), Rigid2d::identity(), Rigid2d::identity()),
+        );
+        let mut landmark_nodes = BTreeMap::new();
+        landmark_nodes.insert(
+            "landmark".to_string(),
+            LandmarkNode {
+                landmark_observations: vec![LandmarkObservation {
+                    trajectory_id: 0,
+                    time: from_universal(10),
+                    landmark_to_tracking_transform: Rigid3d::identity(),
+                    translation_weight: 1.,
+                    rotation_weight: 1.,
+                }],
+                global_landmark_pose: None,
+                frozen: false,
+            },
+        );
+        problem.solve(&[], &active(&[0]), &landmark_nodes);
+    }
+
+    #[test]
+    #[should_panic(expected = "has no nodes")]
+    fn landmark_observed_by_trajectory_without_nodes_panics() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        problem.add_trajectory_node(
+            0,
+            &node(from_universal(10), Rigid2d::identity(), Rigid2d::identity()),
+        );
+        let mut landmark_nodes = BTreeMap::new();
+        landmark_nodes.insert(
+            "landmark".to_string(),
+            LandmarkNode {
+                landmark_observations: vec![LandmarkObservation {
+                    trajectory_id: 3,
+                    time: from_universal(10),
+                    landmark_to_tracking_transform: Rigid3d::identity(),
+                    translation_weight: 1.,
+                    rotation_weight: 1.,
+                }],
+                global_landmark_pose: None,
+                frozen: false,
+            },
+        );
+        problem.solve(&[], &active(&[0]), &landmark_nodes);
+    }
+
+    #[test]
+    fn landmark_observation_before_trajectory_is_skipped() {
+        let landmark = embed_3d(&pose(1., 3., 0.4));
+        let (mut problem, constraints, mut landmark_nodes) =
+            set_up_landmark_problem(&landmark, None, false);
+        landmark_nodes
+            .get_mut("landmark")
+            .unwrap()
+            .landmark_observations[0]
+            .time = from_universal(0) - from_seconds(1.);
+        problem.solve(&constraints, &active(&[0]), &landmark_nodes);
+        assert!(problem.landmark_data().is_empty());
+    }
+
+    fn set_up_fixed_frame_problem(
+        fixed_frame_origin_in_map: &Rigid2d,
+    ) -> (OptimizationProblem2D, Vec<Constraint>) {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        let mut constraints = Vec::new();
+        for i in 0..5 {
+            let gt = pose(f64::from(i), 0.5 * f64::from(i), 0.1 * f64::from(i));
+            problem.add_trajectory_node(0, &node(node_time(i), gt, gt));
+            constraints.push(constraint(
+                SubmapId::new(0, 0),
+                NodeId::new(0, i),
+                gt,
+                Tag::IntraSubmap,
+            ));
+            problem.add_fixed_frame_pose_data(
+                0,
+                &FixedFramePoseData {
+                    time: node_time(i),
+                    pose: Some(embed_3d(&(fixed_frame_origin_in_map.inverse() * gt))),
+                },
+            );
+        }
+        (problem, constraints)
+    }
+
+    #[test]
+    fn fixed_frame_origin_is_estimated() {
+        let fixed_frame_origin_in_map = pose(10., -4., 0.7);
+        let (mut problem, constraints) = set_up_fixed_frame_problem(&fixed_frame_origin_in_map);
+        problem.solve(&constraints, &active(&[0]), &BTreeMap::new());
+        let origin = project_2d(
+            &problem.trajectory_data()[&0]
+                .fixed_frame_origin_in_map
+                .expect("fixed frame origin"),
+        );
+        let (translation_error, rotation_error) = pose_error(&fixed_frame_origin_in_map, &origin);
+        assert!(translation_error < 1e-6, "{origin:?}");
+        assert!(rotation_error < 1e-6, "{origin:?}");
+    }
+
+    #[test]
+    fn fixed_frame_origin_starts_from_trajectory_data() {
+        let fixed_frame_origin_in_map = pose(10., -4., 0.7);
+        let (mut problem, constraints) = set_up_fixed_frame_problem(&fixed_frame_origin_in_map);
+        problem.set_trajectory_data(
+            0,
+            &TrajectoryData {
+                fixed_frame_origin_in_map: Some(embed_3d(&pose(9., -3., 0.5))),
+                ..Default::default()
+            },
+        );
+        problem.solve(&constraints, &active(&[0]), &BTreeMap::new());
+        let origin = project_2d(
+            &problem.trajectory_data()[&0]
+                .fixed_frame_origin_in_map
+                .unwrap(),
+        );
+        let (translation_error, rotation_error) = pose_error(&fixed_frame_origin_in_map, &origin);
+        assert!(translation_error < 1e-6, "{origin:?}");
+        assert!(rotation_error < 1e-6, "{origin:?}");
+    }
+
+    #[test]
+    fn fixed_frame_interpolation() {
+        let mut data = MapByTime::new();
+        let at = |seconds: f64| from_universal(0) + from_seconds(seconds);
+        data.append(
+            0,
+            FixedFramePoseData {
+                time: at(1.),
+                pose: Some(Rigid3d::from_translation(Vector3::new(1., 0., 0.))),
+            },
+        );
+        data.append(
+            0,
+            FixedFramePoseData {
+                time: at(2.),
+                pose: Some(Rigid3d::from_translation(Vector3::new(3., 0., 0.))),
+            },
+        );
+        data.append(
+            0,
+            FixedFramePoseData {
+                time: at(3.),
+                pose: None,
+            },
+        );
+        assert_eq!(interpolate_fixed_frame_pose(&data, 0, at(0.5)), None);
+        assert_eq!(
+            interpolate_fixed_frame_pose(&data, 0, at(1.)),
+            Some(Rigid3d::from_translation(Vector3::new(1., 0., 0.)))
+        );
+        let interpolated = interpolate_fixed_frame_pose(&data, 0, at(1.5)).unwrap();
+        assert!((interpolated.translation() - Vector3::new(2., 0., 0.)).norm() < 1e-12);
+        assert_eq!(interpolate_fixed_frame_pose(&data, 0, at(2.5)), None);
+        assert_eq!(interpolate_fixed_frame_pose(&data, 0, at(3.5)), None);
+    }
+
+    #[test]
+    fn odometry_interpolation() {
+        let mut data = MapByTime::new();
+        let at = |seconds: f64| from_universal(0) + from_seconds(seconds);
+        data.append(
+            0,
+            OdometryData {
+                time: at(1.),
+                pose: Rigid3d::from_translation(Vector3::new(1., 0., 0.)),
+            },
+        );
+        data.append(
+            0,
+            OdometryData {
+                time: at(2.),
+                pose: Rigid3d::from_translation(Vector3::new(3., 0., 0.)),
+            },
+        );
+        assert_eq!(interpolate_odometry(&data, 0, at(0.5)), None);
+        assert_eq!(
+            interpolate_odometry(&data, 0, at(1.)),
+            Some(Rigid3d::from_translation(Vector3::new(1., 0., 0.)))
+        );
+        let interpolated = interpolate_odometry(&data, 0, at(1.25)).unwrap();
+        assert!((interpolated.translation() - Vector3::new(1.5, 0., 0.)).norm() < 1e-12);
+        assert_eq!(interpolate_odometry(&data, 0, at(2.5)), None);
+    }
+
+    #[test]
+    fn insert_and_trim() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.insert_trajectory_node(
+            &NodeId::new(2, 5),
+            &node(node_time(5), Rigid2d::identity(), Rigid2d::identity()),
+        );
+        problem.insert_trajectory_node(
+            &NodeId::new(2, 7),
+            &node(node_time(7), Rigid2d::identity(), Rigid2d::identity()),
+        );
+        problem.insert_submap(&SubmapId::new(2, 3), &pose(1., 2., 3.));
+        assert!(problem.trajectory_data().contains_key(&2));
+        assert_eq!(
+            problem.submap_data().at(&SubmapId::new(2, 3)).global_pose,
+            pose(1., 2., 3.)
+        );
+        problem.add_odometry_data(
+            2,
+            &OdometryData {
+                time: node_time(5),
+                pose: Rigid3d::identity(),
+            },
+        );
+        problem.add_odometry_data(
+            2,
+            &OdometryData {
+                time: node_time(6),
+                pose: Rigid3d::identity(),
+            },
+        );
+        problem.add_odometry_data(
+            2,
+            &OdometryData {
+                time: node_time(7),
+                pose: Rigid3d::identity(),
+            },
+        );
+        problem.trim_trajectory_node(&NodeId::new(2, 5));
+        // Odometry data before the remaining node is no longer needed.
+        assert_eq!(problem.odometry_data().trajectory(2).count(), 1);
+        problem.trim_trajectory_node(&NodeId::new(2, 7));
+        assert!(!problem.trajectory_data().contains_key(&2));
+        problem.trim_submap(&SubmapId::new(2, 3));
+        assert!(problem.submap_data().empty());
+        // IMU data is ignored in 2D.
+        problem.add_imu_data(0, &ImuData::default());
+        assert!(!problem.imu_data().has_trajectory(0));
+    }
+
+    #[test]
+    fn solve_without_nodes_is_a_no_op() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &pose(1., 2., 0.3));
+        problem.solve(&[], &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(
+            problem.submap_data().at(&SubmapId::new(0, 0)).global_pose,
+            pose(1., 2., 0.3)
+        );
+    }
+
+    #[test]
+    fn set_max_num_iterations_updates_options() {
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.set_max_num_iterations(7);
+        assert_eq!(
+            problem
+                .options
+                .ceres_solver_options
+                .unwrap()
+                .max_num_iterations,
+            7
+        );
+    }
+
+    /// Large problem smoke test: building and solving must scale linearly.
+    #[test]
+    fn large_chain_solves() {
+        const NUM: i32 = 5000;
+        let mut problem = OptimizationProblem2D::new(&create_options(1e5));
+        problem.add_submap(0, &Rigid2d::identity());
+        let mut constraints = Vec::new();
+        for i in 0..NUM {
+            let gt = pose(0.1 * f64::from(i), 0., 0.);
+            problem.add_trajectory_node(0, &node(node_time(i), gt, gt * pose(0.01, 0.01, 0.)));
+            if i % 100 == 0 {
+                constraints.push(constraint(
+                    SubmapId::new(0, 0),
+                    NodeId::new(0, i),
+                    gt,
+                    Tag::IntraSubmap,
+                ));
+            }
+        }
+        problem.solve(&constraints, &active(&[0]), &BTreeMap::new());
+        let last = problem
+            .node_data()
+            .at(&NodeId::new(0, NUM - 1))
+            .global_pose_2d;
+        assert!(
+            (last.translation().x - 0.1 * f64::from(NUM - 1)).abs() < 1e-3,
+            "{last:?}"
+        );
     }
 }

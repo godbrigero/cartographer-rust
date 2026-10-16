@@ -32,10 +32,16 @@ pub mod scan_matching;
 // Re-exports mirroring the C++ `cartographer::mapping` namespace, which spans
 // several source directories.
 pub use detect_floors::{Floor, Timespan, detect_floors};
+pub use id::{MapById, NodeId, SubmapId};
 pub use imu_tracker::ImuTracker;
 pub use internal::eigen_quaterniond_from_two_vectors::from_two_vectors;
 pub use internal::motion_filter::{MotionFilter, create_motion_filter_options};
+pub use internal::optimization::cost_functions::acceleration_cost_function_3d::AccelerationCostFunction3D;
+pub use internal::optimization::cost_functions::rotation_cost_function_3d::RotationCostFunction3D;
 pub use internal::range_data_collator::RangeDataCollator;
+pub use internal::three_d::rotation_parameterization::{
+    ConstantYawQuaternionPlus, YawOnlyQuaternionPlus,
+};
 pub use internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask;
 pub use internal::two_d::tsd_value_converter::TSDValueConverter;
 pub use internal::two_d::tsdf_2d::TSDF2D;

@@ -26,10 +26,7 @@ use crate::mapping::proto;
 /// Access to the timestamp of data stored in a [`MapById`] (C++
 /// `internal::GetTime`, which accepts either a `time()` method or a `time`
 /// member).
-pub trait HasTime {
-    /// The timestamp of this datum.
-    fn time(&self) -> Time;
-}
+pub use crate::sensor::data::HasTime;
 
 impl<T: HasTime + ?Sized> HasTime for &T {
     fn time(&self) -> Time {
@@ -683,6 +680,20 @@ impl<'a, I: IdType, D> IntoIterator for &'a MapById<I, D> {
     }
 }
 
+impl<D: HasTime> crate::sensor::map_by_time::NodeTimes for MapById<NodeId, D> {
+    fn neighbor_times(
+        &self,
+        trajectory_id: i32,
+        node_index: i32,
+    ) -> Option<(Option<Time>, Option<Time>)> {
+        let data = &self.trajectories.get(&trajectory_id)?.data;
+        data.get(&node_index)?;
+        let previous = data.range(..node_index).next_back().map(|(_, d)| d.time());
+        let next = data.range(node_index + 1..).next().map(|(_, d)| d.time());
+        Some((previous, next))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +722,29 @@ mod tests {
         fn time(&self) -> Time {
             self.time
         }
+    }
+
+    #[test]
+    fn node_times_neighbors() {
+        use crate::sensor::map_by_time::NodeTimes;
+        let mut map: MapById<NodeId, Data> = MapById::default();
+        map.append(0, Data::new(10));
+        map.append(0, Data::new(20));
+        map.append(0, Data::new(30));
+        assert_eq!(
+            map.neighbor_times(0, 0),
+            Some((None, Some(create_time(20))))
+        );
+        assert_eq!(
+            map.neighbor_times(0, 1),
+            Some((Some(create_time(10)), Some(create_time(30))))
+        );
+        assert_eq!(
+            map.neighbor_times(0, 2),
+            Some((Some(create_time(20)), None))
+        );
+        assert_eq!(map.neighbor_times(0, 3), None);
+        assert_eq!(map.neighbor_times(1, 0), None);
     }
 
     fn create_test_map_by_id<I: IdType>() -> MapById<I, i32> {

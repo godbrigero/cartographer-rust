@@ -1,1 +1,5 @@
 # C++ unit | n/a | justification   (or: unit | note | text)
+common/configuration_files | moved | crates/cartographer/tests/configuration_files.rs
+common/lua | n/a | `lua.h` only wraps the Lua C headers; replaced by the pure-Rust interpreter in `common/lua/`
+mapping/2d/range_data_inserter_2d | moved | crates/cartographer/src/mapping/two_d/probability_grid_range_data_inserter_2d.rs
+mapping/internal/2d/scan_matching/correlative_scan_matcher | moved | crates/cartographer/src/mapping/internal/two_d/scan_matching/correlative_scan_matcher_2d.rs

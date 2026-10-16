@@ -1,7 +1,5 @@
 //! Port of `cartographer/mapping/internal/2d/tsdf_range_data_inserter_2d` (.h, .cc).
 
-use std::cmp::Ordering;
-
 use nalgebra::{SVector, Vector2};
 
 use crate::common::lua_parameter_dictionary::LuaParameterDictionary;
@@ -88,6 +86,205 @@ fn range_data_sorter_less(delta_lhs: &Vector2<f32>, delta_rhs: &Vector2<f32>) ->
     }
 }
 
+/// `std::sort` exactly as implemented by libstdc++ (the reference Linux
+/// build): introsort with median-of-three pivot and unguarded Hoare
+/// partition, heapsort fallback, final insertion sort with threshold 16.
+///
+/// RUST PORT NOTE: `std::sort` is unstable, and the TSDF inserter sorts
+/// returns that very often share a bearing (e.g. the same beam at several
+/// heights). The relative order of such ties decides which neighbours end up
+/// in the normal estimation window (and hence whether the estimated normal is
+/// degenerate), so the libstdc++ permutation is reproduced here instead of
+/// using `slice::sort_unstable_by`, which leaves already sorted input as is.
+fn libstdcxx_sort<T: Copy, F: Fn(&T, &T) -> bool>(v: &mut [T], less: &F) {
+    const S_THRESHOLD: usize = 16;
+
+    fn move_median_to_first<T, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        result: usize,
+        a: usize,
+        b: usize,
+        c: usize,
+        less: &F,
+    ) {
+        if less(&v[a], &v[b]) {
+            if less(&v[b], &v[c]) {
+                v.swap(result, b);
+            } else if less(&v[a], &v[c]) {
+                v.swap(result, c);
+            } else {
+                v.swap(result, a);
+            }
+        } else if less(&v[a], &v[c]) {
+            v.swap(result, a);
+        } else if less(&v[b], &v[c]) {
+            v.swap(result, c);
+        } else {
+            v.swap(result, b);
+        }
+    }
+
+    // `__unguarded_partition(first, last, pivot)` with the pivot at `pivot`.
+    fn unguarded_partition<T, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        mut first: usize,
+        mut last: usize,
+        pivot: usize,
+        less: &F,
+    ) -> usize {
+        loop {
+            while less(&v[first], &v[pivot]) {
+                first += 1;
+            }
+            last -= 1;
+            while less(&v[pivot], &v[last]) {
+                last -= 1;
+            }
+            if first >= last {
+                return first;
+            }
+            v.swap(first, last);
+            first += 1;
+        }
+    }
+
+    // `__adjust_heap` followed by `__push_heap` on `v` (heap of length
+    // `len`), placing `value` starting at `hole_index`.
+    fn adjust_heap<T, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        mut hole_index: usize,
+        len: usize,
+        value: T,
+        less: &F,
+    ) where
+        T: Copy,
+    {
+        let top_index = hole_index;
+        let mut second_child = hole_index;
+        while len >= 1 && second_child < (len - 1) / 2 {
+            second_child = 2 * (second_child + 1);
+            if less(&v[second_child], &v[second_child - 1]) {
+                second_child -= 1;
+            }
+            v[hole_index] = v[second_child];
+            hole_index = second_child;
+        }
+        if len & 1 == 0 && len >= 2 && second_child == (len - 2) / 2 {
+            second_child = 2 * (second_child + 1);
+            v[hole_index] = v[second_child - 1];
+            hole_index = second_child - 1;
+        }
+        // __push_heap
+        while hole_index > top_index {
+            let parent = (hole_index - 1) / 2;
+            if !less(&v[parent], &value) {
+                break;
+            }
+            v[hole_index] = v[parent];
+            hole_index = parent;
+        }
+        v[hole_index] = value;
+    }
+
+    // `std::__partial_sort(first, last, last)`: make_heap + sort_heap.
+    fn heap_sort<T: Copy, F: Fn(&T, &T) -> bool>(v: &mut [T], less: &F) {
+        let len = v.len();
+        if len >= 2 {
+            let mut parent = (len - 2) / 2;
+            loop {
+                let value = v[parent];
+                adjust_heap(v, parent, len, value, less);
+                if parent == 0 {
+                    break;
+                }
+                parent -= 1;
+            }
+        }
+        let mut last = len;
+        while last > 1 {
+            last -= 1;
+            let value = v[last];
+            v[last] = v[0];
+            adjust_heap(v, 0, last, value, less);
+        }
+    }
+
+    fn introsort_loop<T: Copy, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        first: usize,
+        mut last: usize,
+        mut depth_limit: u32,
+        less: &F,
+    ) {
+        while last - first > S_THRESHOLD {
+            if depth_limit == 0 {
+                heap_sort(&mut v[first..last], less);
+                return;
+            }
+            depth_limit -= 1;
+            let mid = first + (last - first) / 2;
+            move_median_to_first(v, first, first + 1, mid, last - 1, less);
+            let cut = unguarded_partition(v, first + 1, last, first, less);
+            introsort_loop(v, cut, last, depth_limit, less);
+            last = cut;
+        }
+    }
+
+    // `__unguarded_linear_insert(i)`.
+    fn unguarded_linear_insert<T: Copy, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        mut i: usize,
+        less: &F,
+    ) {
+        let value = v[i];
+        while less(&value, &v[i - 1]) {
+            v[i] = v[i - 1];
+            i -= 1;
+        }
+        v[i] = value;
+    }
+
+    fn insertion_sort<T: Copy, F: Fn(&T, &T) -> bool>(
+        v: &mut [T],
+        first: usize,
+        last: usize,
+        less: &F,
+    ) {
+        if first == last {
+            return;
+        }
+        for i in first + 1..last {
+            if less(&v[i], &v[first]) {
+                let value = v[i];
+                v.copy_within(first..i, first + 1);
+                v[first] = value;
+            } else {
+                unguarded_linear_insert(v, i, less);
+            }
+        }
+    }
+
+    fn sort<T: Copy, F: Fn(&T, &T) -> bool>(v: &mut [T], less: &F) {
+        let n = v.len();
+        if n == 0 {
+            return;
+        }
+        // `std::__lg(n) * 2`.
+        let depth_limit = 2 * (usize::BITS - 1 - n.leading_zeros());
+        introsort_loop(v, 0, n, depth_limit, less);
+        if n > S_THRESHOLD {
+            insertion_sort(v, 0, S_THRESHOLD, less);
+            for i in S_THRESHOLD..n {
+                unguarded_linear_insert(v, i, less);
+            }
+        } else {
+            insertion_sort(v, 0, n, less);
+        }
+    }
+
+    sort(v, less);
+}
+
 /// `std::pow(float, int)` promotes to double in C++11; the result is narrowed
 /// on assignment to the float weight.
 #[inline]
@@ -161,22 +358,16 @@ impl TSDFRangeDataInserter2D {
             let origin = range_data.origin.xy();
             // The sort keys (normalized bearings) are computed once per point
             // instead of once per comparison; the comparator is the same.
-            // RUST PORT NOTE: `std::sort` is unstable like `sort_unstable_by`;
-            // the relative order of returns with identical bearings may
-            // differ from C++.
+            // RUST PORT NOTE: the libstdc++ `std::sort` permutation is
+            // reproduced (see `libstdcxx_sort`) since ties in bearing are
+            // common and their order affects the normal estimation.
             let mut keyed: Vec<(Vector2<f32>, RangefinderPoint)> = range_data
                 .returns
                 .iter()
                 .map(|p| (eigen_normalized(&(p.position.xy() - origin)), *p))
                 .collect();
-            keyed.sort_unstable_by(|(lhs, _), (rhs, _)| {
-                if range_data_sorter_less(lhs, rhs) {
-                    Ordering::Less
-                } else if range_data_sorter_less(rhs, lhs) {
-                    Ordering::Greater
-                } else {
-                    Ordering::Equal
-                }
+            libstdcxx_sort(&mut keyed, &|(lhs, _), (rhs, _)| {
+                range_data_sorter_less(lhs, rhs)
             });
             sorted_returns = keyed.into_iter().map(|(_, p)| p).collect();
             normals = estimate_normals_for_points(
@@ -308,6 +499,7 @@ impl RangeDataInserterInterface for TSDFRangeDataInserter2D {
 #[cfg(test)]
 mod tests {
     mod range_data_inserter_test_2d_tsdf {
+        use std::cmp::Ordering;
         use std::f64::consts::PI;
         use std::sync::Arc;
 
@@ -640,6 +832,49 @@ mod tests {
             let angles: Vec<f32> = deltas.iter().map(|d| d.y.atan2(d.x)).collect();
             for w in angles.windows(2) {
                 assert!(w[0] < w[1], "{angles:?}");
+            }
+        }
+
+        /// The permutations (FNV-1a hash of the original indices) were
+        /// produced by `std::sort` of GCC 15 libstdc++ on the same input.
+        #[test]
+        fn libstdcxx_sort_matches_gcc() {
+            let expected_hashes: [u64; 4] = [
+                5096954756861255336,
+                11430758030299371450,
+                8003881525295337234,
+                5205500471637729477,
+            ];
+            for c in 0..4 {
+                let mut v: Vec<(i32, i32)> = Vec::new();
+                let mut s: u32 = 12345;
+                let n = if c == 3 { 3000 } else { 1575 };
+                for i in 0..n {
+                    let key = match c {
+                        0 => i / 5,
+                        1 => {
+                            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                            ((s >> 16) % 50) as i32
+                        }
+                        2 => (n - i) / 5,
+                        _ => {
+                            if i < 1500 {
+                                if i % 7 == 0 { 0 } else { 1 }
+                            } else {
+                                i / 3
+                            }
+                        }
+                    };
+                    v.push((key, i));
+                }
+                libstdcxx_sort(&mut v, &|a: &(i32, i32), b: &(i32, i32)| a.0 < b.0);
+                let mut h: u64 = 1469598103934665603;
+                for p in &v {
+                    h ^= p.1 as u64;
+                    h = h.wrapping_mul(1099511628211);
+                }
+                assert_eq!(h, expected_hashes[c as usize], "case {c}");
+                assert!(v.windows(2).all(|w| w[0].0 <= w[1].0));
             }
         }
 

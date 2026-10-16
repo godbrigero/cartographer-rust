@@ -72,9 +72,12 @@ impl Data for LocalSlamResult3D {
 }
 
 impl LocalSlamResultData for LocalSlamResult3D {
-    /// RUST PORT NOTE: unlike 2D, the C++ does not skip submaps refused by
-    /// the `SubmapController` (it pushes a null `shared_ptr`, which crashes
-    /// `PoseGraph3D::AddNode`); here a refused submap panics with a message.
+    /// RUST PORT NOTE: the C++ pushes the result of
+    /// `submap_controller_->UpdateSubmap()` for every submap, including null
+    /// pointers for refused (partially filled, previously unknown) submaps,
+    /// which `PoseGraph3D::AddNode` would then dereference. Like the 2D
+    /// version, refused submaps are dropped here with a logged note, and the
+    /// node is ignored if no submap is left.
     fn add_to_pose_graph(&self, trajectory_id: i32, pose_graph: &dyn Any) {
         let pose_graph = pose_graph
             .downcast_ref::<PoseGraph3D>()
@@ -89,20 +92,23 @@ impl LocalSlamResultData for LocalSlamResult3D {
             submap_protos[0].submap_3d.is_some(),
             "Check failed: local_slam_result_data_.submaps(0).has_submap_3d()"
         );
-        let submaps: Vec<SharedSubmap<Submap3D>> = {
+        let mut submaps: Vec<SharedSubmap<Submap3D>> = Vec::new();
+        {
             let mut submap_controller = self
                 .submap_controller
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            submap_protos
-                .iter()
-                .map(|submap_proto| {
-                    submap_controller
-                        .update_submap(submap_proto)
-                        .expect("SubmapController refused a partially filled 3D submap")
-                })
-                .collect()
-        };
+            for submap_proto in submap_protos {
+                match submap_controller.update_submap(submap_proto) {
+                    Some(submap_ptr) => submaps.push(submap_ptr),
+                    None => log::info!("Ignoring refused (null) submap"),
+                }
+            }
+        }
+        if submaps.is_empty() {
+            log::info!("Ignoring node");
+            return;
+        }
         pose_graph.add_node(
             Arc::new(trajectory_node::from_proto(
                 &self
@@ -122,17 +128,13 @@ mod tests {
     use super::*;
     use crate::common::thread_pool::{ThreadPool, ThreadPoolInterface};
     use crate::mapping::internal::optimization::optimization_problem_3d::OptimizationProblem3D;
-    use crate::mapping::internal::testing::test_helpers::resolve_lua_parameters;
+    use crate::mapping::internal::testing::test_helpers::{
+        create_fake_node, create_fake_submap_3d, resolve_lua_parameters,
+    };
     use crate::mapping::pose_graph::create_pose_graph_options;
     use crate::mapping::pose_graph_interface::PoseGraphInterface;
-    use crate::mapping::submaps::Submap;
-    use crate::mapping::three_d::submap_3d::{ActiveSubmaps3D, create_submaps_options_3d};
-    use crate::mapping::trajectory_node::TrajectoryNodeData;
-    use crate::sensor::point_cloud::PointCloud;
-    use crate::sensor::range_data::RangeData;
-    use crate::sensor::rangefinder_point::RangefinderPoint;
     use crate::transform::rigid_transform::Rigid3d;
-    use nalgebra::{DVector, Quaternion, Vector3};
+    use crate::transform::transform::to_proto;
 
     /// Field order: the pose graph is dropped before the thread pool.
     struct Fixture {
@@ -158,59 +160,24 @@ mod tests {
         }
     }
 
-    fn point_cloud() -> PointCloud {
-        PointCloud::from_points(
-            (0..100)
-                .map(|i| {
-                    let angle = f64::from(i) * 0.0628;
-                    RangefinderPoint {
-                        position: Vector3::new(
-                            (3. * angle.cos()) as f32,
-                            (3. * angle.sin()) as f32,
-                            (0.01 * f64::from(i)) as f32,
-                        ),
-                    }
-                })
-                .collect(),
-        )
-    }
-
-    /// A local SLAM result with one submap holding `num_range_data` range
-    /// data.
-    fn local_slam_result_proto(num_range_data: i32) -> proto::LocalSlamResultData {
-        let mut active_submaps =
-            ActiveSubmaps3D::new(&create_submaps_options_3d(&resolve_lua_parameters(
-                "include 'trajectory_builder_3d.lua' return TRAJECTORY_BUILDER_3D.submaps",
-            )));
-        let histogram = DVector::from_element(120, 0.0f32);
-        let submaps = active_submaps.insert_data(
-            &RangeData {
-                origin: Vector3::zeros(),
-                returns: point_cloud(),
-                misses: PointCloud::default(),
-            },
-            &Quaternion::identity(),
-            &histogram,
-        );
-        let mut submap_proto = submaps[0].read().unwrap().to_proto(true);
-        submap_proto.submap_id = Some(proto::SubmapId {
-            trajectory_id: 0,
-            submap_index: 0,
-        });
-        submap_proto.submap_3d.as_mut().unwrap().num_range_data = num_range_data;
-        let node_data = TrajectoryNodeData {
-            time: from_universal(1000),
-            gravity_alignment: Quaternion::identity(),
-            filtered_gravity_aligned_point_cloud: PointCloud::default(),
-            high_resolution_point_cloud: point_cloud(),
-            low_resolution_point_cloud: point_cloud(),
-            rotational_scan_matcher_histogram: histogram,
-            local_pose: Rigid3d::identity(),
-        };
+    /// A local SLAM result with the given submaps (as `(num_range_data,
+    /// submap_index)`) for trajectory 0.
+    fn local_slam_result_proto(submaps: &[(i32, i32)]) -> proto::LocalSlamResultData {
+        let mut node = create_fake_node(0, 0);
+        let node_data = node.node_data.as_mut().unwrap();
+        node_data.timestamp = 1000;
+        node_data.gravity_alignment = Some(to_proto(Rigid3d::identity().rotation()));
         proto::LocalSlamResultData {
             timestamp: 1000,
-            node_data: Some(trajectory_node::to_proto(&node_data)),
-            submaps: vec![submap_proto],
+            node_data: node.node_data,
+            submaps: submaps
+                .iter()
+                .map(|&(num_range_data, submap_index)| {
+                    let mut submap = create_fake_submap_3d(0, submap_index, false);
+                    submap.submap_3d.as_mut().unwrap().num_range_data = num_range_data;
+                    submap
+                })
+                .collect(),
         }
     }
 
@@ -218,30 +185,73 @@ mod tests {
     fn adds_node_to_pose_graph() {
         let fixture = fixture();
         let controller = Arc::new(Mutex::new(SubmapController::new()));
-        let result = LocalSlamResult3D::new("remote", local_slam_result_proto(1), controller);
+        let result =
+            LocalSlamResult3D::new("remote", local_slam_result_proto(&[(1, 0)]), controller);
         assert_eq!(result.get_time(), from_universal(1000));
         assert_eq!(result.get_sensor_id(), "remote");
         result.add_to_pose_graph(0, &fixture.pose_graph);
-        // No final optimization: 3D optimization without IMU data would
-        // (correctly) CHECK-fail.
+        fixture.pose_graph.wait_for_all_computations();
         assert_eq!(fixture.pose_graph.get_trajectory_nodes().size(), 1);
         assert_eq!(fixture.pose_graph.get_all_submap_data().size(), 1);
     }
 
     #[test]
-    #[should_panic(expected = "refused a partially filled 3D submap")]
-    fn panics_on_refused_submap() {
+    fn drops_refused_submaps() {
         let fixture = fixture();
         let controller = Arc::new(Mutex::new(SubmapController::new()));
-        let result = LocalSlamResult3D::new("remote", local_slam_result_proto(2), controller);
+        // The second submap is new and partially filled: it is refused (null
+        // in C++) and dropped, the node is added with the first one only.
+        let result = LocalSlamResult3D::new(
+            "remote",
+            local_slam_result_proto(&[(1, 0), (2, 1)]),
+            controller,
+        );
         result.add_to_pose_graph(0, &fixture.pose_graph);
+        fixture.pose_graph.wait_for_all_computations();
+        assert_eq!(fixture.pose_graph.get_trajectory_nodes().size(), 1);
+        assert_eq!(fixture.pose_graph.get_all_submap_data().size(), 1);
+    }
+
+    #[test]
+    fn ignores_node_without_usable_submaps() {
+        let fixture = fixture();
+        let controller = Arc::new(Mutex::new(SubmapController::new()));
+        let result =
+            LocalSlamResult3D::new("remote", local_slam_result_proto(&[(2, 0)]), controller);
+        result.add_to_pose_graph(0, &fixture.pose_graph);
+        fixture.pose_graph.wait_for_all_computations();
+        assert_eq!(fixture.pose_graph.get_trajectory_nodes().size(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "has_submap_3d()")]
+    fn panics_on_2d_submap() {
+        let fixture = fixture();
+        let controller = Arc::new(Mutex::new(SubmapController::new()));
+        let mut proto = local_slam_result_proto(&[(1, 0)]);
+        proto.submaps[0].submap_3d = None;
+        proto.submaps[0].submap_2d = Some(proto::Submap2D::default());
+        LocalSlamResult3D::new("remote", proto, controller)
+            .add_to_pose_graph(0, &fixture.pose_graph);
     }
 
     #[test]
     #[should_panic(expected = "dynamic_cast<PoseGraph3D*>")]
     fn panics_on_wrong_pose_graph_type() {
         let controller = Arc::new(Mutex::new(SubmapController::new()));
-        let result = LocalSlamResult3D::new("remote", local_slam_result_proto(1), controller);
+        let result =
+            LocalSlamResult3D::new("remote", local_slam_result_proto(&[(1, 0)]), controller);
         result.add_to_pose_graph(0, &42_i32);
+    }
+
+    #[test]
+    fn add_to_trajectory_builder_forwards_packet() {
+        use crate::mapping::internal::testing::mock_trajectory_builder::MockTrajectoryBuilder;
+        let controller = Arc::new(Mutex::new(SubmapController::new()));
+        let result =
+            LocalSlamResult3D::new("remote", local_slam_result_proto(&[(1, 0)]), controller);
+        let mut builder = MockTrajectoryBuilder::new();
+        Box::new(result).add_to_trajectory_builder(&mut builder);
+        assert_eq!(builder.recorded_calls().len(), 1);
     }
 }

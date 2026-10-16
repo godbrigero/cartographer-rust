@@ -178,8 +178,9 @@ mod porting_status {
         src.matches("#[test]").count()
     }
 
-    fn load_overrides(root: &Path) -> BTreeMap<String, (bool, String)> {
-        // Format: `<cpp unit path> | n/a | reason` or `<cpp unit path> | note | text`.
+    fn load_overrides(root: &Path) -> BTreeMap<String, (String, String)> {
+        // Format: `<cpp unit path> | n/a | reason`, `<cpp unit path> | note | text`
+        // or `<cpp unit path> | moved | <rust file relative to the workspace root>`.
         let mut m = BTreeMap::new();
         if let Ok(s) = fs::read_to_string(root.join("docs/porting_status_overrides.txt")) {
             for line in s.lines() {
@@ -191,7 +192,7 @@ mod porting_status {
                 if parts.len() == 3 {
                     m.insert(
                         parts[0].to_string(),
-                        (parts[1] == "n/a", parts[2].to_string()),
+                        (parts[1].to_string(), parts[2].to_string()),
                     );
                 }
             }
@@ -236,6 +237,8 @@ mod porting_status {
             } else {
                 format!("crates/cartographer/src/{}/{f}.rs", rust_dir(d))
             };
+            let moved = overrides.get(stem.as_str()).filter(|(k, _)| k == "moved");
+            let rust = moved.map_or(rust, |(_, path)| path.clone());
             let rust_path = root.join(&rust);
             let rust_src = fs::read_to_string(&rust_path).unwrap_or_default();
             seen_rust.insert(rust_path.clone());
@@ -258,7 +261,12 @@ mod porting_status {
                 })
                 .count();
             let (na, note) = match overrides.get(stem.as_str()) {
-                Some((na, n)) => (*na, Some(n.clone())),
+                Some((kind, n)) if kind == "n/a" => (true, Some(n.clone())),
+                Some((kind, _)) if kind == "moved" => (
+                    false,
+                    Some("tests live in a differently named Rust file".to_string()),
+                ),
+                Some((_, n)) => (false, Some(n.clone())),
                 None => (false, None),
             };
             out.push(Unit {

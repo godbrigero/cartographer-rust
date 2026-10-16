@@ -52,6 +52,7 @@ pub use internal::three_d::imu_integration::{
     ExtrapolatePoseResult, ImuDataRange, IntegrateImuResult, extrapolate_pose_with_imu,
     extrapolate_pose_with_imu_from_poses, integrate_imu, integrate_imu_with_calibration,
 };
+pub use internal::three_d::local_slam_result_3d::LocalSlamResult3D;
 pub use internal::three_d::local_trajectory_builder_3d::LocalTrajectoryBuilder3D;
 pub use internal::three_d::local_trajectory_builder_options_3d::create_local_trajectory_builder_options_3d;
 pub use internal::three_d::pose_graph_3d::PoseGraph3D;
@@ -73,6 +74,7 @@ pub use internal::two_d::tsdf_2d::TSDF2D;
 pub use internal::two_d::tsdf_range_data_inserter_2d::{
     TSDFRangeDataInserter2D, create_tsdf_range_data_inserter_options_2d,
 };
+pub use map_builder::{MapBuilder, MapBuilderPoseGraph, create_map_builder};
 pub use map_builder_interface::{MapBuilderInterface, create_map_builder_options};
 pub use pose_extrapolator::PoseExtrapolator;
 pub use pose_extrapolator_interface::{

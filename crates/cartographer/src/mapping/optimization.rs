@@ -21,8 +21,10 @@ pub use crate::mapping::internal::optimization::cost_functions::spa_cost_functio
 };
 pub use crate::mapping::internal::optimization::cost_functions::spa_cost_function_3d::SpaCostFunction3D;
 pub use crate::mapping::internal::optimization::optimization_problem_2d::{
-    NodeSpec2D, SubmapSpec2D,
+    NodeSpec2D, OptimizationProblem2D, SubmapSpec2D,
 };
 pub use crate::mapping::internal::optimization::optimization_problem_3d::{
-    NodeSpec3D, SubmapSpec3D,
+    NodeSpec3D, OptimizationProblem3D, SubmapSpec3D,
 };
+pub use crate::mapping::internal::optimization::optimization_problem_interface::OptimizationProblemInterface;
+pub use crate::mapping::internal::optimization::optimization_problem_options::create_optimization_problem_options;

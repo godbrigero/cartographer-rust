@@ -5,6 +5,7 @@
 
 pub mod dataset;
 pub mod grid;
+pub mod metrics;
 pub mod raycast;
 pub mod sensors;
 pub mod spline;

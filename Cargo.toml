@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cartographer", "crates/ceres"]
+members = ["crates/cartographer", "crates/ceres", "crates/sim"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,8 @@ log = "0.4"
 approx = "0.5"
 proptest = "1"
 rand = "0.9"
+rand_chacha = "0.9"
+rand_distr = "0.5"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "plotters"] }
 
 [workspace.lints.rust]

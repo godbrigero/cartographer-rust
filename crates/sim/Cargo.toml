@@ -1,0 +1,19 @@
+[package]
+name = "cartographer-sim"
+description = "Deterministic synthetic-data simulator (worlds, trajectories, sensors, metrics) for testing the Cartographer Rust port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "cartographer_sim"
+
+[dependencies]
+nalgebra.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rand_distr.workspace = true
+
+[lints]
+workspace = true

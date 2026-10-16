@@ -101,3 +101,37 @@ for each area are in `docs/architecture/`.
 * Public items get a short doc comment (C++ header comments are a good source).
 * Report back: files ported, tests ported (C++ name -> Rust name), anything
   not ported and why, any RUST PORT NOTEs, re-exports you want added.
+
+## Already-ported APIs (cheat sheet)
+
+* `common::time`: `Time`, `Duration` (100 ns ticks, i64); `from_seconds`,
+  `to_seconds`, `from_milliseconds`, `from_universal`, `to_universal`;
+  `Time::min()/max()`.
+* `common::port`: `round_to_int`, `round_to_int64`, `fast_gzip_string`,
+  `fast_gunzip_string`. `common::math`: `clamp`, `power`, `pow2`,
+  `deg_to_rad`, `rad_to_deg`, `normalize_angle_difference`, `atan2(&Vector2)`.
+* `common::lua_parameter_dictionary::LuaParameterDictionary` (`get_double`,
+  `get_int`, `get_bool`, `get_string`, `get_dictionary`, `get_non_negative_int`,
+  `get_array_values_as_*`, `has_key`); tests use
+  `common::internal::testing::lua_parameter_dictionary_test_helpers::make_dictionary(code)`.
+  Every key must be read exactly once (checked on drop), like C++.
+* `common::thread_pool::{ThreadPool, ThreadPoolInterface}`, `common::task::Task`
+  (`Arc<Task>`), `common::internal::testing::ThreadPoolForTesting`.
+* `common::internal::ceres_solver_options::{create_ceres_solver_options_proto, create_ceres_solver_options}`.
+* `transform::rigid_transform::{Rigid2, Rigid3, Rigid2d, Rigid2f, Rigid3d, Rigid3f}`
+  (generic over `RealField + Copy`; `Rigid3::rotation()` returns
+  `&nalgebra::Quaternion<T>`), `transform::transform::{get_angle, get_yaw,
+  rotation_quaternion_to_angle_axis_vector, angle_axis_vector_to_rotation_quaternion,
+  project_2d, embed_3d, to_rigid2, to_rigid3, to_proto, to_eigen}`,
+  `transform::timestamped_transform`, `transform::transform_interpolation_buffer`,
+  test helpers `transform::rigid_transform_test_helpers::{IsNearly, assert_is_nearly}`.
+* `ceres` crate (see `crates/ceres/src/lib.rs` docs and `crates/ceres/DESIGN.md`):
+  `Jet<N>`, `Scalar` (`RealField + Copy`, `T::constant(f64)`, `x.scalar_part()`),
+  `CostFunctor` (`fn evaluate<T: Scalar>(&self, params: &[&[T]], residuals: &mut [T]) -> bool`),
+  `AutoDiffCostFunction::<F, N>::new(functor, num_residuals, &[block sizes])`,
+  `CostFunction`, `SizedCostFunction`, loss functions, local parameterizations
+  (`QuaternionParameterization`, `AutoDiffLocalParameterization`, `SubsetParameterization`),
+  `Problem` (handle-based: `add_parameter_block(&[f64]) -> ParameterBlockId`,
+  `add_residual_block(..)`, `parameter_block(id)`), `solve(&SolverOptions, &mut Problem, &mut SolverSummary)`,
+  `ceres::rotation::*`, `ceres::cubic_interpolation::{Grid2, BiCubicInterpolator, ..}`.
+* Simulator for tests: `crates/sim` (`cartographer-sim`), dev-dependency only.

@@ -8,3 +8,5 @@
 pub mod proto {
     pub use crate::protos::cartographer::mapping::scan_matching::proto::*;
 }
+
+pub use crate::mapping::internal::three_d::scan_matching::rotational_scan_matcher::RotationalScanMatcher;

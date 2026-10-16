@@ -34,13 +34,20 @@ pub mod scan_matching;
 pub use detect_floors::{Floor, Timespan, detect_floors};
 pub use id::{MapById, NodeId, SubmapId};
 pub use imu_tracker::ImuTracker;
+pub use internal::collated_trajectory_builder::CollatedTrajectoryBuilder;
 pub use internal::connected_components::ConnectedComponents;
 pub use internal::eigen_quaterniond_from_two_vectors::from_two_vectors;
+pub use internal::global_trajectory_builder::{
+    create_global_trajectory_builder_2d, create_global_trajectory_builder_3d,
+    global_trajectory_builder_register_metrics,
+};
 pub use internal::imu_based_pose_extrapolator::ImuBasedPoseExtrapolator;
+pub use internal::local_slam_result_data::LocalSlamResultData;
 pub use internal::motion_filter::{MotionFilter, create_motion_filter_options};
 pub use internal::optimization::cost_functions::acceleration_cost_function_3d::AccelerationCostFunction3D;
 pub use internal::optimization::cost_functions::rotation_cost_function_3d::RotationCostFunction3D;
 pub use internal::range_data_collator::RangeDataCollator;
+pub use internal::submap_controller::SubmapController;
 pub use internal::three_d::imu_integration::{
     ExtrapolatePoseResult, ImuDataRange, IntegrateImuResult, extrapolate_pose_with_imu,
     extrapolate_pose_with_imu_from_poses, integrate_imu, integrate_imu_with_calibration,
@@ -51,6 +58,7 @@ pub use internal::three_d::rotation_parameterization::{
     ConstantYawQuaternionPlus, YawOnlyQuaternionPlus,
 };
 pub use internal::trajectory_connectivity_state::TrajectoryConnectivityState;
+pub use internal::two_d::local_slam_result_2d::LocalSlamResult2D;
 pub use internal::two_d::local_trajectory_builder_2d::LocalTrajectoryBuilder2D;
 pub use internal::two_d::local_trajectory_builder_options_2d::create_local_trajectory_builder_options_2d;
 pub use internal::two_d::normal_estimation_2d::{
@@ -64,6 +72,7 @@ pub use internal::two_d::tsdf_2d::TSDF2D;
 pub use internal::two_d::tsdf_range_data_inserter_2d::{
     TSDFRangeDataInserter2D, create_tsdf_range_data_inserter_options_2d,
 };
+pub use map_builder_interface::{MapBuilderInterface, create_map_builder_options};
 pub use pose_extrapolator::PoseExtrapolator;
 pub use pose_extrapolator_interface::{
     ExtrapolationResult, PoseExtrapolatorInterface, create_pose_extrapolator_options,
@@ -83,6 +92,10 @@ pub use three_d::range_data_inserter_3d::{
     RangeDataInserter3D, create_range_data_inserter_options_3d,
 };
 pub use three_d::submap_3d::{ActiveSubmaps3D, Submap3D, create_submaps_options_3d};
+pub use trajectory_builder_interface::{
+    InsertionResult, LocalSlamResultCallback, TrajectoryBuilderInterface,
+    create_trajectory_builder_options,
+};
 pub use trajectory_builder_interface::{SensorId, SensorType};
 pub use trajectory_node::{TrajectoryNode, TrajectoryNodeData, TrajectoryNodePose};
 pub use two_d::grid_2d::{AlignedBox2i, Grid2D, Grid2DTrait, GridType, create_grid_options_2d};

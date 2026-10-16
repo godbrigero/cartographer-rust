@@ -9,11 +9,12 @@
 //!
 //! For example usage, see SolverImpl::Minimize.
 //!
-//! RUST PORT NOTE: inner iterations, bounds constraints (and therefore the
-//! projected line search) and trust region problem dumping are not ported.
+//! RUST PORT NOTE: inner iterations and trust region problem dumping are not
+//! ported.
 
 use std::time::Instant;
 
+use crate::line_search::{ArmijoLineSearch, LineSearchFunction, LineSearchOptions};
 use crate::program::{BlockJacobian, Evaluator};
 use crate::solver::{IterationSummary, SolverOptions, SolverSummary};
 use crate::stringprintf::{fmt_d, fmt_e};
@@ -29,6 +30,9 @@ pub(crate) struct TrustRegionMinimizer<'e, 'p, 'a, 'o> {
     step_evaluator: Option<TrustRegionStepEvaluator>,
 
     is_not_silent: bool,
+    // Use a bounds constrained optimization algorithm (C++
+    // `Minimizer::Options::is_constrained`).
+    is_constrained: bool,
     num_parameters: usize,
 
     start_time: Instant,
@@ -82,6 +86,7 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
         options: &'o SolverOptions,
         evaluator: &'e mut Evaluator<'p, 'a>,
         strategy: LevenbergMarquardtStrategy,
+        is_constrained: bool,
         preprocessor_time_in_seconds: f64,
     ) -> Self {
         let num_parameters = evaluator.program.num_parameters;
@@ -96,6 +101,7 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
             jacobian,
             step_evaluator: None,
             is_not_silent: options.logging_type != LoggingType::Silent,
+            is_constrained,
             num_parameters,
             start_time: now,
             iteration_start_time: now,
@@ -130,7 +136,7 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
         solver_summary.termination_type = TerminationType::NoConvergence;
         solver_summary.num_successful_steps = 0;
         solver_summary.num_unsuccessful_steps = 0;
-        solver_summary.is_constrained = false;
+        solver_summary.is_constrained = self.is_constrained;
         self.x = parameters[..self.num_parameters].to_vec();
 
         if !self.iteration_zero(solver_summary) {
@@ -178,6 +184,12 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
                 continue;
             }
 
+            if self.is_constrained && self.options.max_num_line_search_step_size_iterations > 0 {
+                // Use a projected line search to enforce the bounds
+                // constraints and improve the quality of the step.
+                self.do_line_search(solver_summary);
+            }
+
             self.compute_candidate_point_and_evaluate_cost();
 
             if self.parameter_tolerance_reached(solver_summary) {
@@ -218,7 +230,8 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
         )
     }
 
-    /// Compute the initial cost, jacobian & gradient.
+    /// 1. Project the initial solution onto the feasible set if needed.
+    /// 2. Compute the initial cost, jacobian & gradient.
     ///
     /// Return true if all computations can be performed successfully.
     fn iteration_zero(&mut self, solver_summary: &mut SolverSummary) -> bool {
@@ -236,6 +249,22 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
             step_solver_time_in_seconds: 0.0,
             ..IterationSummary::default()
         };
+
+        if self.is_constrained {
+            self.delta.fill(0.0);
+            if !self
+                .evaluator
+                .plus(&self.x, &self.delta, &mut self.candidate_x)
+            {
+                solver_summary.message =
+                    "Unable to project initial point onto the feasible set.".to_string();
+                solver_summary.termination_type = TerminationType::Failure;
+                return false;
+            }
+
+            self.x.copy_from_slice(&self.candidate_x);
+            self.x_norm = self.x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        }
 
         if !self.evaluate_gradient_and_jacobian(solver_summary) {
             return false;
@@ -552,6 +581,60 @@ impl<'e, 'p, 'a, 'o> TrustRegionMinimizer<'e, 'p, 'a, 'o> {
         self.iteration_summary.relative_decrease = 0.0;
         self.iteration_summary.eta = self.options.eta;
         true
+    }
+
+    /// Use an Armijo line search along `delta` (C++ `DoLineSearch`, called
+    /// with `x_`, `gradient_`, `x_cost_` and `&delta_`) to project the step
+    /// onto the bounds constraints and improve its quality: on success
+    /// `delta` is scaled by the step size found.
+    ///
+    /// TODO(sameeragarwal): The current implementation does not do anything
+    /// illegal but is incorrect and not terribly effective.
+    ///
+    /// https://github.com/ceres-solver/ceres-solver/issues/187
+    fn do_line_search(&mut self, solver_summary: &mut SolverSummary) {
+        let options = self.options;
+        let line_search_options = LineSearchOptions {
+            is_silent: true,
+            interpolation_type: options.line_search_interpolation_type,
+            min_step_size: options.min_line_search_step_size,
+            sufficient_decrease: options.line_search_sufficient_function_decrease,
+            max_step_contraction: options.max_line_search_step_contraction,
+            min_step_contraction: options.min_line_search_step_contraction,
+            max_num_iterations: options.max_num_line_search_step_size_iterations,
+            sufficient_curvature_decrease: options.line_search_sufficient_curvature_decrease,
+            max_step_expansion: options.max_line_search_step_expansion,
+        };
+
+        let cost = self.x_cost;
+        let initial_gradient: f64 = self
+            .gradient
+            .iter()
+            .zip(&self.delta)
+            .map(|(g, d)| g * d)
+            .sum();
+        let mut line_search_function = LineSearchFunction::new(&mut *self.evaluator);
+        let line_search = ArmijoLineSearch::new(line_search_options);
+        line_search_function.init(&self.x, &self.delta);
+        let line_search_summary =
+            line_search.search(&mut line_search_function, 1.0, cost, initial_gradient);
+
+        solver_summary.num_line_search_steps += line_search_summary.num_iterations;
+        solver_summary.line_search_cost_evaluation_time_in_seconds +=
+            line_search_summary.cost_evaluation_time_in_seconds;
+        solver_summary.line_search_gradient_evaluation_time_in_seconds +=
+            line_search_summary.gradient_evaluation_time_in_seconds;
+        solver_summary.line_search_polynomial_minimization_time_in_seconds +=
+            line_search_summary.polynomial_minimization_time_in_seconds;
+        solver_summary.line_search_total_time_in_seconds +=
+            line_search_summary.total_time_in_seconds;
+
+        if line_search_summary.success {
+            let step = line_search_summary.optimal_point.x;
+            for d in &mut self.delta {
+                *d *= step;
+            }
+        }
     }
 
     /// Check if the maximum amount of time allowed by the user for the

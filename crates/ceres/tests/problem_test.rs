@@ -1782,8 +1782,93 @@ fn problem_evaluate_residual_block_test_one_residual_block_with_one_parameter_bl
     expect_matrix_near(&expected_dfdy, &actual_dfdy);
 }
 
-// Skipped: Problem.SetAndGetParameterLowerBound and
-// Problem.SetAndGetParameterUpperBound (parameter bounds are not ported).
+#[test]
+fn set_and_get_parameter_lower_bound() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0, 2.0]);
+
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), -f64::MAX);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+
+    problem.set_parameter_lower_bound(x, 0, -1.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), -1.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+
+    problem.set_parameter_lower_bound(x, 0, -2.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), -2.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+
+    problem.set_parameter_lower_bound(x, 0, -f64::MAX);
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), -f64::MAX);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+}
+
+#[test]
+fn set_and_get_parameter_upper_bound() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0, 2.0]);
+
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), f64::MAX);
+
+    problem.set_parameter_upper_bound(x, 0, -1.0);
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), -1.0);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), f64::MAX);
+
+    problem.set_parameter_upper_bound(x, 0, -2.0);
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), -2.0);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), f64::MAX);
+
+    problem.set_parameter_upper_bound(x, 0, f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), f64::MAX);
+}
+
+// ParameterBlock.DefaultBounds / ParameterBlock.SetBounds
+// (parameter_block_test.cc), through the public Problem API.
+#[test]
+fn parameter_block_default_and_set_bounds() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[0.0, 0.0]);
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), f64::MAX);
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), -f64::MAX);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+
+    problem.set_parameter_lower_bound(x, 0, 1.0);
+    problem.set_parameter_upper_bound(x, 1, 1.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 0), 1.0);
+    assert_eq!(problem.get_parameter_lower_bound(x, 1), -f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 0), f64::MAX);
+    assert_eq!(problem.get_parameter_upper_bound(x, 1), 1.0);
+}
+
+#[test]
+#[should_panic(expected = "Parameter block not found")]
+fn set_parameter_lower_bound_on_unknown_block_dies() {
+    let mut other = Problem::new();
+    let x = other.add_parameter_block(&[1.0]);
+    let mut problem = Problem::new();
+    problem.set_parameter_lower_bound(x, 0, 0.0);
+}
+
+#[test]
+#[should_panic(expected = "Parameter block not found")]
+fn get_parameter_upper_bound_on_removed_block_dies() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0]);
+    problem.remove_parameter_block(x);
+    problem.get_parameter_upper_bound(x, 0);
+}
+
+// CHECK_LT(index, size_) in ParameterBlock::SetLowerBound / SetUpperBound.
+#[test]
+#[should_panic(expected = "index < size")]
+fn set_parameter_bound_with_out_of_range_index_dies() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0, 2.0]);
+    problem.set_parameter_upper_bound(x, 2, 0.0);
+}
 
 #[test]
 fn set_parameterization_twice() {

@@ -61,7 +61,9 @@ by floating point rounding.
 | `program.rs` | `internal/ceres/program.cc`, `program_evaluator.h`, `block_sparse_matrix.cc`, `block_jacobian_writer.cc` |
 | `linear_solver.rs` | `internal/ceres/linear_solver.h`, `dense_qr_solver.cc`, `dense_normal_cholesky_solver.cc`, `sparse_normal_cholesky_solver.cc`, `inner_product_computer.cc` |
 | `trust_region.rs` | `internal/ceres/levenberg_marquardt_strategy.cc`, `trust_region_strategy.h`, `trust_region_step_evaluator.cc` |
-| `trust_region_minimizer.rs` | `internal/ceres/trust_region_minimizer.cc`, `minimizer.cc`, `callbacks.cc` (logging callback) |
+| `trust_region_minimizer.rs` | `internal/ceres/trust_region_minimizer.cc` (incl. `DoLineSearch` and the projection in `IterationZero`), `minimizer.cc`, `callbacks.cc` (logging callback) |
+| `line_search.rs` | `internal/ceres/line_search.{h,cc}` (`LineSearchFunction`, `InterpolatingPolynomialMinimizingStepSize`, `ArmijoLineSearch`) |
+| `polynomial.rs` | `internal/ceres/polynomial.{h,cc}`, `function_sample.{h,cc}` |
 | `solver.rs` | `include/ceres/solver.h`, `iteration_callback.h`, `internal/ceres/solver.cc`, `solver_utils.{h,cc}`, `preprocessor.cc`, `trust_region_preprocessor.cc` |
 | `types.rs` | `include/ceres/types.h`, `internal/ceres/types.cc` |
 | `stringprintf.rs` | `internal/ceres/stringprintf.cc` (only the printf conversions needed for reports) |
@@ -69,9 +71,44 @@ by floating point rounding.
 Ported tests: `jet_test`, `rotation_test`, `cubic_interpolation_test`,
 `loss_function_test`, `local_parameterization_test`,
 `autodiff_local_parameterization_test`, `autodiff_cost_function_test`,
-`corrector_test`, `problem_test`, `solver_test` and
+`corrector_test`, `problem_test`, `solver_test`, `polynomial_test`
+(in `polynomial.rs`), the bound tests of `parameter_block_test`,
+`program_test` and `trust_region_preprocessor_test`, and
 `trust_region_minimizer_test` (where applicable), plus the `powell`,
-`curve_fitting` and `robust_curve_fitting` examples and pose graph tests.
+`curve_fitting` and `robust_curve_fitting` examples, bounded curve fitting
+and pose graph tests. Ceres 2.0.0 has no `line_search_test`; the Armijo
+search has its own unit tests in `line_search.rs`.
+
+## Parameter bounds
+
+`Problem::set_parameter_{lower,upper}_bound` / `get_parameter_*_bound`
+store bounds per parameter block, lazily allocated, default `∓f64::MAX`
+(`parameter_block.h`). `ParameterBlock::plus` projects onto the box after
+the local parameterization's `Plus`, and `Program::plus` (used by the
+evaluator, the minimizer and the line search) goes through it. The
+preprocessor runs `Program::IsFeasible` (constant blocks must satisfy their
+bounds, variable blocks need `lower < upper`) and sets `is_constrained`
+from `Program::IsBoundsConstrained` on the reduced program. The trust region
+minimizer then projects the initial point and, if
+`max_num_line_search_step_size_iterations > 0`, runs the projected Armijo
+line search (`DoLineSearch`) on every valid step, with the 2.0.0 line search
+option defaults (CUBIC interpolation, `min_line_search_step_contraction =
+0.6`, ...). Summary fields `is_constrained`, `num_line_search_steps` and
+the line search timings are filled, and `full_report` prints the line
+search lines like Ceres.
+
+As upstream notes in `DoLineSearch` ("incorrect and not terribly
+effective", ceres-solver issue #187), this scheme converges slowly when a
+bound is active and the variables are coupled: the step quality uses the
+unprojected model decrease and the Armijo test the unprojected directional
+derivative. The port reproduces that behaviour rather than improving on it
+(see the bounded curve fitting tests).
+
+Numerical differences from Eigen: `FindPolynomialRoots` uses nalgebra's
+real Schur decomposition for the companion matrix eigenvalues and deflates
+exact zero roots (trailing zero coefficients) first, since nalgebra does
+not resolve the nilpotent companion matrix exactly; `FullPivLU` with
+threshold 0 is reimplemented to match Eigen on rank deficient systems.
 
 ## Structural changes (RUST PORT NOTEs)
 
@@ -122,13 +159,12 @@ already a dependency of faer: `erf`, `erfc`, Bessel `j0/j1/jn` for
 
 ## Intentionally omitted
 
-* Line search minimizer (LBFGS/BFGS/NCG), DOGLEG strategy, inner
+* Line search minimizer (LBFGS/BFGS/NCG, Wolfe line search,
+  `line_search_direction_type`, `max_lbfgs_rank`, ...), DOGLEG strategy, inner
   iterations (coordinate descent), Schur and iterative linear solvers
   (`DENSE_SCHUR`, `SPARSE_SCHUR`, `ITERATIVE_SCHUR`, `CGNR`),
   preconditioners, linear solver orderings, `dynamic_sparsity`, mixed
   precision / iterative refinement.
-* Parameter bounds (`SetParameterLowerBound/UpperBound`) and therefore the
-  projected line search of the trust region minimizer.
 * `EvaluationCallback`, `update_state_every_iteration`, gradient checking
   (`check_gradients`), trust region problem dumping, `Context`.
 * `NumericDiffCostFunction`, `DynamicAutoDiffCostFunction`,

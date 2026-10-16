@@ -1053,7 +1053,6 @@ impl PoseGraph3D {
     /// that were requested so far have finished (C++ protected
     /// `WaitForAllComputations`, exposed by the tests'
     /// `PoseGraph3DForTesting`).
-    #[cfg(test)]
     pub(crate) fn wait_for_all_computations(&self) {
         self.inner.wait_for_all_computations();
     }

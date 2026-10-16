@@ -5,7 +5,7 @@
 //! duck typing. Here the two template parameters are bounded by the traits
 //! [`LocalTrajectoryBuilder`] (implemented by `LocalTrajectoryBuilder2D` and
 //! `LocalTrajectoryBuilder3D`) and [`AddNodePoseGraph`] (implemented by
-//! `PoseGraph2D`; `PoseGraph3D` implements it once ported). The template is
+//! `PoseGraph2D` and `PoseGraph3D`). The template is
 //! public (in C++ it is in an anonymous namespace) so that tests and the
 //! map builder can name it.
 
@@ -17,6 +17,7 @@ use crate::mapping::id::NodeId;
 use crate::mapping::internal::local_slam_result_data::LocalSlamResultData;
 use crate::mapping::internal::motion_filter::MotionFilter;
 use crate::mapping::internal::three_d::local_trajectory_builder_3d::LocalTrajectoryBuilder3D;
+use crate::mapping::internal::three_d::pose_graph_3d::PoseGraph3D;
 use crate::mapping::internal::two_d::local_trajectory_builder_2d::LocalTrajectoryBuilder2D;
 use crate::mapping::internal::two_d::pose_graph_2d::PoseGraph2D;
 use crate::mapping::pose_graph::PoseGraph;
@@ -201,6 +202,19 @@ impl AddNodePoseGraph for PoseGraph2D {
     }
 }
 
+impl AddNodePoseGraph for PoseGraph3D {
+    type Submap = Submap3D;
+
+    fn add_node(
+        &self,
+        constant_data: Arc<TrajectoryNodeData>,
+        trajectory_id: i32,
+        insertion_submaps: &[SharedSubmap<Submap3D>],
+    ) -> NodeId {
+        PoseGraph3D::add_node(self, constant_data, trajectory_id, insertion_submaps)
+    }
+}
+
 /// Wires a local trajectory builder to a pose graph: local SLAM results are
 /// added as nodes, other sensor data is forwarded to the pose graph.
 ///
@@ -382,19 +396,13 @@ pub fn create_global_trajectory_builder_2d(
 /// Creates a 3D global trajectory builder (C++
 /// `CreateGlobalTrajectoryBuilder3D`).
 ///
-/// RUST PORT NOTE: generic over the pose graph until `PoseGraph3D` (which
-/// will implement [`AddNodePoseGraph`] with `Submap = Submap3D`) is ported;
-/// call it as `create_global_trajectory_builder_3d::<PoseGraph3D>(..)`.
-pub fn create_global_trajectory_builder_3d<P>(
+pub fn create_global_trajectory_builder_3d(
     local_trajectory_builder: Option<LocalTrajectoryBuilder3D>,
     trajectory_id: i32,
-    pose_graph: Arc<P>,
+    pose_graph: Arc<PoseGraph3D>,
     local_slam_result_callback: Option<LocalSlamResultCallback>,
     pose_graph_odometry_motion_filter: Option<MotionFilter>,
-) -> Box<dyn TrajectoryBuilderInterface>
-where
-    P: AddNodePoseGraph<Submap = Submap3D>,
-{
+) -> Box<dyn TrajectoryBuilderInterface> {
     Box::new(GlobalTrajectoryBuilder::new(
         local_trajectory_builder,
         trajectory_id,

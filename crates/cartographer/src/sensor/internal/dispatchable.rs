@@ -147,6 +147,16 @@ mod tests {
         fn add_landmark_data(&mut self, sensor_id: &str, d: &LandmarkData) {
             self.calls.push(("landmark", sensor_id.to_string(), d.time));
         }
+        fn add_local_slam_result_data(
+            &mut self,
+            d: Box<dyn crate::mapping::internal::local_slam_result_data::LocalSlamResultData>,
+        ) {
+            self.calls.push((
+                "local_slam_result",
+                d.get_sensor_id().to_string(),
+                d.get_time(),
+            ));
+        }
     }
 
     #[test]

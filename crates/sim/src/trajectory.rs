@@ -113,6 +113,7 @@ pub struct Trajectory {
     end_time: f64,
     height: f64,
     motion: Option<HandheldMotion>,
+    ramp: f64,
 }
 
 impl Trajectory {
@@ -177,6 +178,7 @@ impl Trajectory {
             end_time,
             height: 0.0,
             motion: None,
+            ramp: 0.0,
         }
     }
 
@@ -208,6 +210,40 @@ impl Trajectory {
         self
     }
 
+    /// Starts the motion from rest: the speed ramps up smoothly
+    /// (smoothstep profile, C1-continuous velocity) from 0 to the nominal
+    /// speed over `ramp_seconds`. The duration is extended by
+    /// `ramp_seconds / 2` so that the same path is covered. Derivatives stay
+    /// consistent, so simulated IMU data remains exact. Handheld motion is
+    /// unaffected.
+    ///
+    /// Real SLAM sessions start at rest, and Cartographer's pose
+    /// extrapolators assume zero initial velocity.
+    ///
+    /// # Panics
+    /// If `ramp_seconds < 0`.
+    pub fn with_start_from_rest(mut self, ramp_seconds: f64) -> Self {
+        assert!(ramp_seconds >= 0.0, "ramp_seconds must be non-negative");
+        self.end_time += (ramp_seconds - self.ramp) / 2.0;
+        self.ramp = ramp_seconds;
+        self
+    }
+
+    /// Maps trajectory-relative time `tau` to path time `s`, returning
+    /// `(s, ds/dtau, d2s/dtau2)`.
+    fn warp(&self, tau: f64) -> (f64, f64, f64) {
+        let t = self.ramp;
+        if t <= 0.0 || tau >= t {
+            return (tau - t / 2.0, 1.0, 0.0);
+        }
+        let u = (tau / t).max(0.0);
+        (
+            t * (u.powi(3) - 0.5 * u.powi(4)),
+            3.0 * u * u - 2.0 * u.powi(3),
+            (6.0 * u - 6.0 * u * u) / t,
+        )
+    }
+
     /// Start time (s).
     pub fn start_time(&self) -> f64 {
         self.start_time
@@ -232,15 +268,19 @@ impl Trajectory {
     pub fn state(&self, t: f64) -> TrajectoryState {
         let t = t.clamp(self.start_time, self.end_time);
         let tau = t - self.start_time;
-        let (x, vx, ax) = self.x.eval(tau);
-        let (y, vy, ay) = self.y.eval(tau);
-        let speed2 = vx * vx + vy * vy;
-        let yaw = vy.atan2(vx);
+        let (s, f, fd) = self.warp(tau);
+        let (x, vx_s, ax_s) = self.x.eval(s);
+        let (y, vy_s, ay_s) = self.y.eval(s);
+        let speed2 = vx_s * vx_s + vy_s * vy_s;
+        let yaw = vy_s.atan2(vx_s);
         let yaw_rate = if speed2 > 1e-12 {
-            (vx * ay - vy * ax) / speed2
+            (vx_s * ay_s - vy_s * ax_s) / speed2 * f
         } else {
             0.0
         };
+        // Chain rule through the time warp.
+        let (vx, vy) = (vx_s * f, vy_s * f);
+        let (ax, ay) = (ax_s * f * f + vx_s * fd, ay_s * f * f + vy_s * fd);
         let (z, vz, az, roll, roll_d, pitch, pitch_d) = match &self.motion {
             None => (self.height, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             Some(m) => {
@@ -529,6 +569,26 @@ mod tests {
         check_derivatives(&Trajectory::room_wander(1.0, 0.8));
         check_derivatives(&Trajectory::room_wander_3d(1.0, 0.8));
         check_derivatives(&Trajectory::corridor_loops_3d(0.3, 1.5).with_start_time(5.0));
+    }
+
+    #[test]
+    fn start_from_rest() {
+        let base = Trajectory::corridor_loops(1.0, 1.5);
+        let traj = base.clone().with_start_from_rest(3.0);
+        // Derivatives stay consistent through the ramp (and in 3D).
+        check_derivatives(&traj);
+        check_derivatives(&Trajectory::room_wander_3d(1.0, 0.8).with_start_from_rest(2.0));
+        // At rest at the start, nominal speed after the ramp.
+        let s0 = traj.state(traj.start_time());
+        assert!(s0.linear_velocity.norm() < 1e-12);
+        assert!(s0.angular_velocity.norm() < 1e-12);
+        assert!((traj.state(4.0).linear_velocity.norm() - 1.5).abs() < 0.08);
+        // Same path: same start/end poses, duration extended by ramp / 2.
+        assert!((traj.duration() - base.duration() - 1.5).abs() < 1e-12);
+        let (a, b) = (traj.state(traj.end_time()), base.state(base.end_time()));
+        assert!((a.pose.translation.vector - b.pose.translation.vector).norm() < 1e-9);
+        let (a, b) = (traj.state(10.0), base.state(10.0 - 1.5));
+        assert!((a.pose.translation.vector - b.pose.translation.vector).norm() < 1e-9);
     }
 
     fn min_clearance(world: &World2d, traj: &Trajectory) -> f64 {

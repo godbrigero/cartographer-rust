@@ -323,6 +323,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cartographer-demos"
+version = "0.1.0"
+dependencies = [
+ "cartographer",
+ "cartographer-rosbag",
+ "cartographer-sim",
+ "clap",
+ "nalgebra",
+ "png",
+]
+
+[[package]]
 name = "cartographer-rosbag"
 version = "0.1.0"
 dependencies = [

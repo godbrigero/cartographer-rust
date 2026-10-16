@@ -1,0 +1,42 @@
+[package]
+name = "cartographer-cloud"
+description = "Port of cartographer/cloud: gRPC map builder server, client stubs and local trajectory uploader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "cartographer_cloud"
+
+[[bin]]
+# C++ target `cartographer_grpc_server` (map_builder_server_main.cc).
+name = "cartographer_grpc_server"
+path = "src/map_builder_server_main.rs"
+
+[features]
+default = ["prometheus"]
+# Prometheus metrics and the `/metrics` HTTP exposer (C++ `USE_PROMETHEUS`).
+prometheus = ["dep:prometheus-client"]
+
+[dependencies]
+cartographer = { path = "../cartographer" }
+nalgebra.workspace = true
+prost.workspace = true
+log.workspace = true
+clap.workspace = true
+# gRPC: plaintext HTTP/2 only (no `tls-*` features, so no ring/aws-lc/openssl).
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "router"] }
+tonic-prost = "0.14"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+# Pure-Rust Prometheus client (replaces prometheus-cpp).
+prometheus-client = { version = "0.25", optional = true }
+
+[build-dependencies]
+protox.workspace = true
+prost-build.workspace = true
+tonic-prost-build = { version = "0.14", default-features = false, features = ["transport"] }
+
+[lints]
+workspace = true

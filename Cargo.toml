@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cartographer", "crates/ceres", "crates/sim", "crates/xtask"]
+members = ["crates/cartographer", "crates/cartographer-cloud", "crates/ceres","crates/sim", "crates/xtask"]
 
 [workspace.package]
 version = "0.1.0"

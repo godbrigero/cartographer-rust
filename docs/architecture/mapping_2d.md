@@ -622,7 +622,7 @@ State: `gravity_time_constant` (const), `time_`, `last_linear_acceleration_time_
 ### 5.6 Sensor helpers used (owned by the sensor port; semantics that matter here)
 - `VoxelFilter(points, size)`: key `(lround(x/s) as u64 << 42) + (lround(y/s) << 21) + lround(z/s)` (negative ints wrap — collisions possible, replicate); **randomized reservoir sampling** per voxel with `std::minstd_rand0` (default seed 1) and `std::uniform_int_distribution<>(1, count)`; output keeps original order of chosen points. Exact output depends on the standard library's `uniform_int_distribution` algorithm (libstdc++ vs libc++ differ) -> bit-exact parity with C++ is not achievable unless one stdlib's algorithm is reproduced; tests should not depend on which point is chosen.
 - `AdaptiveVoxelFilter`: `FilterByMaxRange(|p| <= max_range)`; if size <= min_num_points return; try `max_length`; else halve `high_length` until `low=high/2` gives >= min points, then binary search until `(high-low)/low <= 0.1`.
-- `CropRangeData(rd, min_z, max_z)`: keeps points with z in range (returns and misses).
+- `CropRangeData(rd, min_z, max_z)`: keeps points with `min_z <= z <= max_z` (inclusive; returns and misses; origin untouched).
 
 ---
 
@@ -795,7 +795,7 @@ Tolerances quoted exactly. "Fixture" lines describe shared setup.
 |---|---|
 | `NormalEstimation2DTest.SinglePoint` | single return on unit circle at angle a (100 angles in [-π,π)): normal ≈ a+π within `2π/100 + 1e-4` (via NormalizeAngleDifference) |
 | `.StraightLineGeometry` | {(-1,1),(0,1),(1,1)} -> all -π/2; {(1,1),(1,0),(1,-1)} -> |n| = π; {(1,-1),(0,-1),(-1,-1)} -> π/2; {(-1,-1),(-1,0),(-1,1)} -> 0; tol 1e-4; options {2, 10} |
-| `CircularGeometry2DTest.NumSamplesPerNormal` (param 1,2,4,5,8) | 100 points on unit circle ordered from -π: normal[i] ≈ angle_i+π... checked as `NormalizeAngleDifference(normal - i*2π/100) ≈ 0` within `2π/100 * N/2 + 1e-4` |
+| `CircularGeometry2DTest.NumSamplesPerNormal` (param N = 1,2,4,5,8) | 100 points on the unit circle, point i at bearing `i*2π/100 - π`, origin 0, radius 10: normal (pointing inward, = bearing + π) checked as `NormalizeAngleDifference(normal[i] - i*2π/100) ≈ 0` within `2π/100 * N/2 + 1e-4` |
 
 ### 9.14 `mapping/internal/2d/overlapping_submaps_trimmer_2d_test.cc` (uses `testing::FakeTrimmable` from `internal/testing/`)
 - Helper `AddSquareSubmap(global_from_submap, local_from_submap, corner max, index, num_cells, finished)`: proto grid res 1, all cells value 1, known box full, `num_range_data = 1`.
@@ -822,7 +822,7 @@ Tolerances quoted exactly. "Fixture" lines describe shared setup.
 | `FastCorrelativeScanMatcherTest.CorrectPose` | depth 3, lin 3, ang 1; inserter hit 0.7/miss 0.4; 6-point cloud; 50 random poses (t ∈ [-2,2]², θ ∈ [-0.5,0.5]); fresh 200x200 res 0.05 grid each; `Match(Identity, cloud, 0.1)` true, score > 0.1, pose ≈ expected (IsNearly 0.03) |
 | `FastCorrelativeScanMatcherTest.FullSubmapMatching` | depth 6; 20 iterations; cloud perturbed by random (±10 m, ±1.6 rad); `MatchFullSubmap` true, score > 0.1, pose within 0.03 |
 | `InterpolatedTSDF2DTest.InterpolatesGridPoints` | TSDF res 1, max (5.5,5.5), 10x10, trunc 1, max_w 10; 4 inner + ring cells set (0.1, 1); at inner grid points interpolated == raw cc/weight (1e-4); at (3,2) (border neighbor unknown) cost == max cc (1.0) and weight == raw |
-| `InterpolatedTSDF2DTest.InterpolatesWithinCell` | 4 cells at (0,0),(0,1),(1,0),(1,1) with tsd 0.1..0.4, w 1..4; sample x,y = 0.01 (step res/100? loop increments by res so effectively one sample): value equals bilinear formula (1e-3) |
+| `InterpolatedTSDF2DTest.InterpolatesWithinCell` | 4 cells at (0,0),(0,1),(1,0),(1,1) with tsd 0.1/0.2/0.3/0.4, w 1/2/3/4; loops start at res/100 = 0.01 and step by res (1.0) while < 1, so only (0.01, 0.01) is sampled: tsd and weight equal the bilinear formula (1e-3) |
 | `OccupiedSpaceCostFunction2DTest.SmokeTest` | empty 2x2 grid, point (0,0), pose 0: residual == 0.9 (`DoubleEq(kMaxProbability)`, i.e. kMaxCorrespondenceCost); jacobian computed but unchecked |
 | `RealTimeCorrelativeScanMatcherTest.ScorePerfectHighResolutionCandidateProbabilityGrid` | grid res 0.05 max (0.05,0.25) 6x6, insert 7-point cloud (same as DiscretizeScans) from origin 0, hit 0.7; candidate (0,0,0) score ≈ 0.7 (1e-2) |
 | `...ScorePerfectHighResolutionCandidateTSDF` | TSDF res 0.05 max (0.3,0.5) 20x20 trunc 0.3 max_w 1.0; inserter (trunc 0.3, max_w 10, normals {4,0.5}, project true, bandwidths 0.5/0.5), origin (0.5,-0.5); score ≈ 1.0 (0.1) and > 0.95 |

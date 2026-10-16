@@ -119,6 +119,12 @@ impl ThreadPool {
 
 // RUST PORT NOTE: the C++ worker threads lower their priority with
 // `nice(10)` on Linux; this needs `unsafe` libc calls and is omitted.
+//
+// RUST PORT NOTE: a failed `CHECK`/`LOG(FATAL)` inside a task aborts the
+// whole C++ process. A Rust panic would only unwind the worker thread and
+// leave everything waiting on that task (e.g. the pose graph work queue)
+// blocked forever, so a panicking task aborts the process as well, after
+// the panic message has been printed by the panic hook.
 fn do_work(shared: &Shared) {
     loop {
         let task = {
@@ -140,7 +146,12 @@ fn do_work(shared: &Shared) {
             State::DependenciesCompleted,
             "Check failed: task->GetState() == common::Task::DEPENDENCIES_COMPLETED"
         );
-        execute(&task);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&task)));
+        if result.is_err() {
+            log::error!("A task panicked on a ThreadPool worker thread; aborting.");
+            eprintln!("A task panicked on a ThreadPool worker thread; aborting.");
+            std::process::abort();
+        }
     }
 }
 
@@ -168,12 +179,9 @@ impl Drop for ThreadPool {
             state.running = false;
             self.shared.condition.notify_all();
         }
-        let mut worker_panicked = false;
         for thread in self.pool.drain(..) {
-            worker_panicked |= thread.join().is_err();
-        }
-        if worker_panicked && !std::thread::panicking() {
-            panic!("A ThreadPool worker thread panicked.");
+            // Workers never unwind (a panicking task aborts the process).
+            let _ = thread.join();
         }
     }
 }

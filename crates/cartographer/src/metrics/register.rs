@@ -16,5 +16,6 @@ use super::family_factory::FamilyFactory;
 /// must be added here (before the sensor one) once those modules are ported.
 pub fn register_all_metrics(registry: &mut dyn FamilyFactory) {
     crate::mapping::internal::two_d::local_trajectory_builder_2d::LocalTrajectoryBuilder2D::register_metrics(registry);
+    crate::mapping::internal::three_d::local_trajectory_builder_3d::LocalTrajectoryBuilder3D::register_metrics(registry);
     crate::sensor::internal::trajectory_collator::TrajectoryCollator::register_metrics(registry);
 }

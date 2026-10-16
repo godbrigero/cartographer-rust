@@ -44,6 +44,8 @@ pub use internal::three_d::imu_integration::{
     ExtrapolatePoseResult, ImuDataRange, IntegrateImuResult, extrapolate_pose_with_imu,
     extrapolate_pose_with_imu_from_poses, integrate_imu, integrate_imu_with_calibration,
 };
+pub use internal::three_d::local_trajectory_builder_3d::LocalTrajectoryBuilder3D;
+pub use internal::three_d::local_trajectory_builder_options_3d::create_local_trajectory_builder_options_3d;
 pub use internal::three_d::rotation_parameterization::{
     ConstantYawQuaternionPlus, YawOnlyQuaternionPlus,
 };

@@ -14,9 +14,11 @@
 //! [`SolverOptions`] / [`SolverSummary`] (Rust has no nested types). Only
 //! the trust region minimizer with Levenberg-Marquardt and the
 //! `DENSE_QR`, `DENSE_NORMAL_CHOLESKY` and `SPARSE_NORMAL_CHOLESKY` linear
-//! solvers are ported; options for the other algorithms (line search,
-//! dogleg, Schur/iterative solvers, inner iterations, orderings, gradient
-//! checking, problem dumping) are absent.
+//! solvers are ported; options for the other algorithms (line search
+//! minimizer, dogleg, Schur/iterative solvers, inner iterations, orderings,
+//! gradient checking, problem dumping) are absent. The line search step
+//! size options are present: they configure the projected Armijo line
+//! search used for bounds constrained problems.
 
 use std::fmt;
 use std::sync::Arc;
@@ -24,13 +26,14 @@ use std::time::Instant;
 
 use crate::linear_solver::LinearSolver;
 use crate::problem::Problem;
-use crate::program::{Evaluator, Program};
+use crate::program::{Evaluator, Program, is_feasible};
 use crate::stringprintf::{fmt_d, fmt_e, fmt_f};
 use crate::trust_region::{LevenbergMarquardtStrategy, TrustRegionStrategyOptions};
 use crate::trust_region_minimizer::TrustRegionMinimizer;
 use crate::types::{
-    CallbackReturnType, DenseLinearAlgebraLibraryType, LinearSolverType, LoggingType,
-    MinimizerType, SparseLinearAlgebraLibraryType, TerminationType, TrustRegionStrategyType,
+    CallbackReturnType, DenseLinearAlgebraLibraryType, LineSearchInterpolationType,
+    LinearSolverType, LoggingType, MinimizerType, SparseLinearAlgebraLibraryType, TerminationType,
+    TrustRegionStrategyType,
 };
 
 /// This struct describes the state of the optimizer after each iteration of
@@ -167,6 +170,55 @@ pub struct SolverOptions {
     /// TrustRegionMinimizer allows for a few successive invalid steps before
     /// it declares NUMERICAL_FAILURE.
     pub max_num_consecutive_invalid_steps: i32,
+    /// Degree of the polynomial used to approximate the objective function
+    /// in the line search. Valid values are BISECTION, QUADRATIC and CUBIC.
+    ///
+    /// RUST PORT NOTE: the line search options are used by the projected
+    /// Armijo line search the trust region minimizer runs on bounds
+    /// constrained problems (the line search minimizer is not ported).
+    pub line_search_interpolation_type: LineSearchInterpolationType,
+    /// If during the line search, the step_size falls below this value, it
+    /// is truncated to zero.
+    pub min_line_search_step_size: f64,
+    /// Line search parameters.
+    ///
+    /// Solving the line search problem exactly is computationally
+    /// prohibitive. Fortunately, line search based optimization algorithms
+    /// can still guarantee convergence if instead of an exact solution, the
+    /// line search algorithm returns a solution which decreases the value of
+    /// the objective function sufficiently. More precisely, we are looking
+    /// for a step_size s.t.
+    ///
+    ///   f(step_size) <= f(0) + sufficient_decrease * f'(0) * step_size
+    pub line_search_sufficient_function_decrease: f64,
+    /// In each iteration of the line search,
+    ///
+    ///  new_step_size >= max_line_search_step_contraction * step_size
+    ///
+    /// Note that by definition, for contraction:
+    ///
+    ///  0 < max_step_contraction < min_step_contraction < 1
+    pub max_line_search_step_contraction: f64,
+    /// In each iteration of the line search,
+    ///
+    ///  new_step_size <= min_line_search_step_contraction * step_size
+    pub min_line_search_step_contraction: f64,
+    /// Maximum number of trial step size iterations during each line
+    /// search, if a step size satisfying the search conditions cannot be
+    /// found within this number of trials, the line search will terminate.
+    /// For the trust region minimizer, 0 disables the projected line search
+    /// on bounds constrained problems.
+    pub max_num_line_search_step_size_iterations: i32,
+    /// The strong Wolfe conditions consist of the Armijo sufficient decrease
+    /// condition, and an additional requirement that the step-size be chosen
+    /// s.t. the _magnitude_ ('strong' Wolfe conditions) of the gradient
+    /// along the search direction decreases sufficiently (validated only).
+    pub line_search_sufficient_curvature_decrease: f64,
+    /// During the bracketing phase of the Wolfe search, the step size is
+    /// increased until either a point satisfying the Wolfe conditions is
+    /// found, or an upper bound for a bracket containing a point satisfying
+    /// the conditions is found (validated only).
+    pub max_line_search_step_expansion: f64,
     /// Minimizer terminates when
     ///
     ///   (new_cost - old_cost) < function_tolerance * old_cost;
@@ -229,6 +281,14 @@ impl Default for SolverOptions {
             min_lm_diagonal: 1e-6,
             max_lm_diagonal: 1e32,
             max_num_consecutive_invalid_steps: 5,
+            line_search_interpolation_type: LineSearchInterpolationType::Cubic,
+            min_line_search_step_size: 1e-9,
+            line_search_sufficient_function_decrease: 1e-4,
+            max_line_search_step_contraction: 1e-3,
+            min_line_search_step_contraction: 0.6,
+            max_num_line_search_step_size_iterations: 20,
+            line_search_sufficient_curvature_decrease: 0.9,
+            max_line_search_step_expansion: 10.0,
             function_tolerance: 1e-6,
             gradient_tolerance: 1e-10,
             parameter_tolerance: 1e-8,
@@ -349,6 +409,52 @@ impl SolverOptions {
                 }
             }
         }
+
+        // LineSearchOptionsAreValid. We do not know if the problem is bounds
+        // constrained or not, if it is then the trust region solver will
+        // also use the line search solver to do a projection onto the box
+        // constraints, so make sure that the line search options are checked
+        // independent of what minimizer algorithm is being used.
+        //
+        // RUST PORT NOTE: `max_lbfgs_rank` and the (L)BFGS/WOLFE check do not
+        // apply (no line search minimizer).
+        option_op!(o, min_line_search_step_size, >, 0.0);
+        option_op!(o, max_line_search_step_contraction, >, 0.0);
+        option_op!(o, max_line_search_step_contraction, <, 1.0);
+        option_op_option!(
+            o,
+            max_line_search_step_contraction,
+            <,
+            min_line_search_step_contraction
+        );
+        option_op!(o, min_line_search_step_contraction, <=, 1.0);
+        // minimizer_type is always TRUST_REGION here.
+        option_op!(o, max_num_line_search_step_size_iterations, >=, 0);
+        option_op!(o, line_search_sufficient_function_decrease, >, 0.0);
+        option_op_option!(
+            o,
+            line_search_sufficient_function_decrease,
+            <,
+            line_search_sufficient_curvature_decrease
+        );
+        option_op!(o, line_search_sufficient_curvature_decrease, <, 1.0);
+        option_op!(o, max_line_search_step_expansion, >, 1.0);
+        // Warn user if they have requested BISECTION interpolation, but
+        // constraints on max/min step size change during line search prevent
+        // bisection scaling from occurring. Warn only, as this is likely a
+        // user mistake, but one which does not prevent us from continuing.
+        if o.line_search_interpolation_type == LineSearchInterpolationType::Bisection
+            && (o.max_line_search_step_contraction > 0.5
+                || o.min_line_search_step_contraction < 0.5)
+        {
+            log::warn!(
+                "Line search interpolation type is BISECTION, but specified \
+                 max_line_search_step_contraction: {}, and min_line_search_step_contraction: {}, \
+                 prevent bisection (0.5) scaling, continuing with solve regardless.",
+                o.max_line_search_step_contraction,
+                o.min_line_search_step_contraction
+            );
+        }
         Ok(())
     }
 }
@@ -426,8 +532,25 @@ pub struct SolverSummary {
     pub num_residual_blocks_reduced: i32,
     /// Number of residuals in the reduced problem.
     pub num_residuals_reduced: i32,
-    /// Is the reduced problem bounds constrained (always false here).
+    /// Is the reduced problem bounds constrained.
     pub is_constrained: bool,
+    /// Number of times the line search was used by the trust region
+    /// minimizer for bounds constrained problems (sum of the line search
+    /// iterations).
+    pub num_line_search_steps: i32,
+    /// Time (in seconds) spent evaluating the univariate cost function as
+    /// part of a line search.
+    pub line_search_cost_evaluation_time_in_seconds: f64,
+    /// Time (in seconds) spent evaluating the gradient of the univariate
+    /// cost function as part of a line search.
+    pub line_search_gradient_evaluation_time_in_seconds: f64,
+    /// Time (in seconds) spent minimizing the interpolating polynomial to
+    /// compute the next candidate step size as part of a line search.
+    pub line_search_polynomial_minimization_time_in_seconds: f64,
+    /// Total time (in seconds) spent performing line searches.
+    pub line_search_total_time_in_seconds: f64,
+    /// Type of polynomial interpolation used by the line search.
+    pub line_search_interpolation_type: LineSearchInterpolationType,
     /// Number of threads specified by the user for Jacobian and residual
     /// evaluation.
     pub num_threads_given: i32,
@@ -478,6 +601,12 @@ impl Default for SolverSummary {
             num_residual_blocks_reduced: -1,
             num_residuals_reduced: -1,
             is_constrained: false,
+            num_line_search_steps: -1,
+            line_search_cost_evaluation_time_in_seconds: -1.0,
+            line_search_gradient_evaluation_time_in_seconds: -1.0,
+            line_search_polynomial_minimization_time_in_seconds: -1.0,
+            line_search_total_time_in_seconds: -1.0,
+            line_search_interpolation_type: LineSearchInterpolationType::Cubic,
             num_threads_given: -1,
             num_threads_used: -1,
             linear_solver_type_given: LinearSolverType::SparseNormalCholesky,
@@ -606,6 +735,16 @@ impl SolverSummary {
             d(self.num_unsuccessful_steps, 14)
         );
 
+        // minimizer_type is always TRUST_REGION here.
+        let line_search_used = self.is_constrained;
+
+        if line_search_used {
+            report += &format!(
+                "Line search steps              {}\n",
+                d(self.num_line_search_steps, 14)
+            );
+        }
+
         report += "\nTime (in seconds):\n";
         report += &format!(
             "Preprocessor        {}\n",
@@ -616,16 +755,49 @@ impl SolverSummary {
             fmt_f(self.residual_evaluation_time_in_seconds, 18, 6, false),
             self.num_residual_evaluations
         );
+        if line_search_used {
+            report += &format!(
+                "    Line search cost evaluation    {}\n",
+                fmt_f(
+                    self.line_search_cost_evaluation_time_in_seconds,
+                    10,
+                    6,
+                    false
+                )
+            );
+        }
         report += &format!(
             "  Jacobian & residual evaluation {} ({})\n",
             fmt_f(self.jacobian_evaluation_time_in_seconds, 12, 6, false),
             self.num_jacobian_evaluations
         );
+        if line_search_used {
+            report += &format!(
+                "    Line search gradient evaluation   {}\n",
+                fmt_f(
+                    self.line_search_gradient_evaluation_time_in_seconds,
+                    6,
+                    6,
+                    false
+                )
+            );
+        }
         report += &format!(
             "  Linear solver       {} ({})\n",
             fmt_f(self.linear_solver_time_in_seconds, 23, 6, false),
             self.num_linear_solves
         );
+        if line_search_used {
+            report += &format!(
+                "  Line search polynomial minimization  {}\n",
+                fmt_f(
+                    self.line_search_polynomial_minimization_time_in_seconds,
+                    0,
+                    6,
+                    false
+                )
+            );
+        }
         report += &format!(
             "Minimizer           {}\n\n",
             fmt_f(self.minimizer_time_in_seconds, 25, 6, false)
@@ -690,6 +862,12 @@ pub fn solve(options: &SolverOptions, problem: &mut Problem<'_>, summary: &mut S
     summary.num_threads_given = options.num_threads;
     summary.sparse_linear_algebra_library_type = options.sparse_linear_algebra_library_type;
     summary.trust_region_strategy_type = options.trust_region_strategy_type;
+    summary.num_line_search_steps = 0;
+    summary.line_search_cost_evaluation_time_in_seconds = 0.0;
+    summary.line_search_gradient_evaluation_time_in_seconds = 0.0;
+    summary.line_search_polynomial_minimization_time_in_seconds = 0.0;
+    summary.line_search_total_time_in_seconds = 0.0;
+    summary.line_search_interpolation_type = options.line_search_interpolation_type;
 
     // TrustRegionPreprocessor::Preprocess.
     let preprocessed = preprocess(problem);
@@ -740,6 +918,8 @@ pub fn solve(options: &SolverOptions, problem: &mut Problem<'_>, summary: &mut S
                     },
                     LinearSolver::new(options.linear_solver_type),
                 );
+                // SetupMinimizerOptions.
+                let is_constrained = program.is_bounds_constrained(problem);
                 summary.preprocessor_time_in_seconds = start_time.elapsed().as_secs_f64();
 
                 let minimizer_start_time = Instant::now();
@@ -748,6 +928,7 @@ pub fn solve(options: &SolverOptions, problem: &mut Problem<'_>, summary: &mut S
                         options,
                         &mut evaluator,
                         strategy,
+                        is_constrained,
                         summary.preprocessor_time_in_seconds,
                     );
                     minimizer.minimize(&mut reduced_parameters, summary);
@@ -810,5 +991,7 @@ fn preprocess(problem: &Problem<'_>) -> Result<(Program, f64), String> {
             ));
         }
     }
+    // IsProgramValid: the program must be feasible.
+    is_feasible(problem)?;
     Program::create_reduced_program(problem)
 }

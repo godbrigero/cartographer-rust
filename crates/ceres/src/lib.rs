@@ -18,7 +18,10 @@
 //!   [`SubsetParameterization`], [`AutoDiffLocalParameterization`], ...).
 //! * [`Problem`] and [`solve`]: trust region minimization with
 //!   Levenberg-Marquardt and `DENSE_QR`, `DENSE_NORMAL_CHOLESKY` or
-//!   `SPARSE_NORMAL_CHOLESKY` linear solvers.
+//!   `SPARSE_NORMAL_CHOLESKY` linear solvers, and parameter bounds
+//!   ([`Problem::set_parameter_lower_bound`],
+//!   [`Problem::set_parameter_upper_bound`]) handled by projection plus the
+//!   projected Armijo line search, like Ceres.
 //!
 //! # Example
 //!
@@ -105,9 +108,11 @@ mod corrector;
 pub mod cost_function;
 pub mod cubic_interpolation;
 pub mod jet;
+mod line_search;
 mod linear_solver;
 pub mod local_parameterization;
 pub mod loss_function;
+mod polynomial;
 pub mod problem;
 mod program;
 mod residual_block;
@@ -141,6 +146,7 @@ pub use problem::{
 pub use scalar::Scalar;
 pub use solver::{IterationCallback, IterationSummary, SolverOptions, SolverSummary, solve};
 pub use types::{
-    CallbackReturnType, DenseLinearAlgebraLibraryType, LinearSolverType, LoggingType,
-    MinimizerType, SparseLinearAlgebraLibraryType, TerminationType, TrustRegionStrategyType,
+    CallbackReturnType, DenseLinearAlgebraLibraryType, LineSearchInterpolationType,
+    LinearSolverType, LoggingType, MinimizerType, SparseLinearAlgebraLibraryType, TerminationType,
+    TrustRegionStrategyType,
 };

@@ -70,9 +70,90 @@ pub(crate) struct ParameterBlock<'a> {
     pub values: Vec<f64>,
     pub constant: bool,
     pub parameterization: Option<Box<dyn LocalParameterization + 'a>>,
+    /// Upper and lower bounds for the parameter block. `set_upper_bound`
+    /// and `set_lower_bound` lazily initialize them; `None` means
+    /// unbounded (`±f64::MAX`).
+    pub upper_bounds: Option<Vec<f64>>,
+    pub lower_bounds: Option<Vec<f64>>,
 }
 
 impl ParameterBlock<'_> {
+    /// C++ `ParameterBlock::SetUpperBound`.
+    pub(crate) fn set_upper_bound(&mut self, index: usize, upper_bound: f64) {
+        let size = self.size();
+        assert!(
+            index < size,
+            "Check failed: index < size ({index} vs. {size})"
+        );
+
+        if upper_bound >= f64::MAX && self.upper_bounds.is_none() {
+            return;
+        }
+
+        self.upper_bounds
+            .get_or_insert_with(|| vec![f64::MAX; size])[index] = upper_bound;
+    }
+
+    /// C++ `ParameterBlock::SetLowerBound`.
+    pub(crate) fn set_lower_bound(&mut self, index: usize, lower_bound: f64) {
+        let size = self.size();
+        assert!(
+            index < size,
+            "Check failed: index < size ({index} vs. {size})"
+        );
+
+        if lower_bound <= -f64::MAX && self.lower_bounds.is_none() {
+            return;
+        }
+
+        self.lower_bounds
+            .get_or_insert_with(|| vec![-f64::MAX; size])[index] = lower_bound;
+    }
+
+    /// C++ `ParameterBlock::UpperBoundForParameter` (also `UpperBound`).
+    pub(crate) fn upper_bound_for_parameter(&self, index: usize) -> f64 {
+        self.upper_bounds.as_ref().map_or(f64::MAX, |b| b[index])
+    }
+
+    /// C++ `ParameterBlock::LowerBoundForParameter` (also `LowerBound`).
+    pub(crate) fn lower_bound_for_parameter(&self, index: usize) -> f64 {
+        self.lower_bounds.as_ref().map_or(-f64::MAX, |b| b[index])
+    }
+
+    /// Generalization of the addition operation. This is the same as
+    /// `LocalParameterization::plus()` followed by projection onto the hyper
+    /// cube implied by the bounds constraints (C++ `ParameterBlock::Plus`).
+    pub(crate) fn plus(&self, x: &[f64], delta: &[f64], x_plus_delta: &mut [f64]) -> bool {
+        let size = self.size();
+        match &self.parameterization {
+            Some(p) => {
+                if !p.plus(x, delta, x_plus_delta) {
+                    return false;
+                }
+            }
+            None => {
+                for i in 0..size {
+                    x_plus_delta[i] = x[i] + delta[i];
+                }
+            }
+        }
+
+        // Project onto the box constraints.
+        if let Some(lower_bounds) = &self.lower_bounds {
+            for i in 0..size {
+                x_plus_delta[i] = x_plus_delta[i].max(lower_bounds[i]);
+            }
+        }
+
+        if let Some(upper_bounds) = &self.upper_bounds {
+            for i in 0..size {
+                x_plus_delta[i] = x_plus_delta[i].min(upper_bounds[i]);
+            }
+        }
+
+        true
+    }
+
     pub(crate) fn size(&self) -> usize {
         self.values.len()
     }
@@ -300,6 +381,8 @@ impl<'a> Problem<'a> {
             values: values.to_vec(),
             constant: false,
             parameterization: None,
+            upper_bounds: None,
+            lower_bounds: None,
         }));
         if local_parameterization.is_some() {
             self.set_parameterization(id, local_parameterization);
@@ -438,6 +521,47 @@ impl<'a> Problem<'a> {
         id: ParameterBlockId,
     ) -> Option<&(dyn LocalParameterization + 'a)> {
         self.checked_block(id).parameterization.as_deref()
+    }
+
+    /// Set the lower bound for the parameter at position `index` in the
+    /// parameter block corresponding to `id`. By default the lower bound is
+    /// `-f64::MAX`, which is treated by the solver as the same as -infinity.
+    /// Panics if the block is not in the problem or `index` is out of range.
+    pub fn set_parameter_lower_bound(
+        &mut self,
+        id: ParameterBlockId,
+        index: usize,
+        lower_bound: f64,
+    ) {
+        self.checked_block_mut(id)
+            .set_lower_bound(index, lower_bound);
+    }
+
+    /// Set the upper bound for the parameter at position `index` in the
+    /// parameter block corresponding to `id`. By default the value is
+    /// `f64::MAX`, which is treated by the solver as the same as infinity.
+    pub fn set_parameter_upper_bound(
+        &mut self,
+        id: ParameterBlockId,
+        index: usize,
+        upper_bound: f64,
+    ) {
+        self.checked_block_mut(id)
+            .set_upper_bound(index, upper_bound);
+    }
+
+    /// Get the lower bound for the parameter with position `index`. If the
+    /// parameter is not bounded by the user, then its lower bound is
+    /// `-f64::MAX`.
+    pub fn get_parameter_lower_bound(&self, id: ParameterBlockId, index: usize) -> f64 {
+        self.checked_block(id).lower_bound_for_parameter(index)
+    }
+
+    /// Get the upper bound for the parameter with position `index`. If the
+    /// parameter is not bounded by the user, then its upper bound is
+    /// `f64::MAX`.
+    pub fn get_parameter_upper_bound(&self, id: ParameterBlockId, index: usize) -> f64 {
+        self.checked_block(id).upper_bound_for_parameter(index)
     }
 
     /// The current values of a parameter block (after `solve`, the optimized
@@ -745,4 +869,65 @@ fn block_jacobian_to_crs(j: &BlockJacobian) -> CrsMatrix {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    //! Ported from Ceres Solver 2.0.0 internal/ceres/parameter_block_test.cc
+    //! (the bounds tests; the others are covered through the public API).
+    use super::*;
+    use crate::local_parameterization::SubsetParameterization;
+
+    #[test]
+    fn plus_with_bounds_constraints() {
+        let mut problem = Problem::new();
+        let id = problem.add_parameter_block(&[1.0, 0.0]);
+        problem.set_parameter_upper_bound(id, 0, 2.0);
+        problem.set_parameter_lower_bound(id, 1, -1.0);
+        let mut x_plus_delta = [0.0; 2];
+        assert!(
+            problem
+                .block(id.0)
+                .plus(&[1.0, 0.0], &[2.0, -10.0], &mut x_plus_delta)
+        );
+        assert_eq!(x_plus_delta[0], 2.0);
+        assert_eq!(x_plus_delta[1], -1.0);
+    }
+
+    // RUST PORT NOTE: not upstream. The projection is applied after the
+    // local parameterization's Plus.
+    #[test]
+    fn plus_with_parameterization_projects_after_plus() {
+        let mut problem = Problem::new();
+        let id = problem.add_parameter_block_with_parameterization(
+            &[1.0, 5.0],
+            Some(Box::new(SubsetParameterization::new(2, &[1]))),
+        );
+        problem.set_parameter_upper_bound(id, 0, 3.0);
+        problem.set_parameter_upper_bound(id, 1, 3.0);
+        let mut x_plus_delta = [0.0; 2];
+        // Only coordinate 0 is in the tangent space (index 1 is held
+        // constant by the subset parameterization), but both are projected.
+        assert!(
+            problem
+                .block(id.0)
+                .plus(&[1.0, 5.0], &[10.0], &mut x_plus_delta)
+        );
+        assert_eq!(x_plus_delta, [3.0, 3.0]);
+    }
+
+    #[test]
+    fn setting_default_bound_does_not_allocate() {
+        let mut problem = Problem::new();
+        let id = problem.add_parameter_block(&[1.0, 0.0]);
+        problem.set_parameter_upper_bound(id, 0, f64::MAX);
+        problem.set_parameter_lower_bound(id, 1, -f64::MAX);
+        assert!(problem.block(id.0).upper_bounds.is_none());
+        assert!(problem.block(id.0).lower_bounds.is_none());
+        problem.set_parameter_lower_bound(id, 1, 0.0);
+        assert_eq!(
+            problem.block(id.0).lower_bounds.as_deref(),
+            Some(&[-f64::MAX, 0.0][..])
+        );
+    }
 }

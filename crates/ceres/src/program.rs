@@ -23,6 +23,7 @@ use crate::problem::Problem;
 use crate::residual_block::{
     ArgInput, MAX_ARGS_ON_STACK, evaluate_residual_block, invalidate_array, is_array_valid,
 };
+use crate::stringprintf::fmt_e;
 
 /// A parameter block as seen by a [`Program`].
 #[derive(Clone, Debug)]
@@ -271,8 +272,9 @@ impl Program {
         }
     }
 
-    /// `state_plus_delta = Plus(state, delta)` for every parameter block
-    /// (C++ `Program::Plus`).
+    /// `state_plus_delta = Plus(state, delta)` for every parameter block,
+    /// including the projection onto the bounds constraints (C++
+    /// `Program::Plus` calling `ParameterBlock::Plus`).
     pub(crate) fn plus(
         &self,
         problem: &Problem<'_>,
@@ -284,21 +286,80 @@ impl Program {
             let x = &state[b.state_offset..b.state_offset + b.size];
             let d = &delta[b.delta_offset..b.delta_offset + b.local_size];
             let out = &mut state_plus_delta[b.state_offset..b.state_offset + b.size];
-            match &problem.block(b.problem_index).parameterization {
-                Some(p) => {
-                    if !p.plus(x, d, out) {
-                        return false;
-                    }
-                }
-                None => {
-                    for i in 0..b.size {
-                        out[i] = x[i] + d[i];
-                    }
-                }
+            if !problem.block(b.problem_index).plus(x, d, out) {
+                return false;
             }
         }
         true
     }
+
+    /// Is the problem bound constrained by user specified bounds (C++
+    /// `Program::IsBoundsConstrained`)? Constant blocks are ignored.
+    pub(crate) fn is_bounds_constrained(&self, problem: &Problem<'_>) -> bool {
+        self.blocks.iter().any(|b| {
+            let pb = problem.block(b.problem_index);
+            !pb.is_constant()
+                && (0..b.size).any(|j| {
+                    pb.lower_bound_for_parameter(j) > -f64::MAX
+                        || pb.upper_bound_for_parameter(j) < f64::MAX
+                })
+        })
+    }
+}
+
+/// Returns `Err(message)` if the problem has an infeasible parameter block
+/// (C++ `Program::IsFeasible`, applied like `TrustRegionPreprocessor` to the
+/// program of all parameter blocks of the problem): a constant parameter
+/// block whose value violates its bounds, or a variable parameter block with
+/// an empty feasible region (`lower_bound >= upper_bound`).
+///
+/// RUST PORT NOTE: `%p` prints the block id and `AppendArrayToString` is
+/// replaced by `{:?}` of the values, like the finiteness check.
+pub(crate) fn is_feasible(problem: &Problem<'_>) -> Result<(), String> {
+    for (index, parameter_block) in problem.parameter_blocks_iter() {
+        let id = crate::problem::ParameterBlockId(index);
+        let parameters = &parameter_block.values;
+        let size = parameter_block.size();
+        if parameter_block.is_constant() {
+            // Constant parameter blocks must start in the feasible region to
+            // ultimately produce a feasible solution, since Ceres cannot
+            // change them.
+            for j in 0..size {
+                let lower_bound = parameter_block.lower_bound_for_parameter(j);
+                let upper_bound = parameter_block.upper_bound_for_parameter(j);
+                if parameters[j] < lower_bound || parameters[j] > upper_bound {
+                    return Err(format!(
+                        "ParameterBlock: {id:?} with size {size} has at least one infeasible value.\
+                         \nFirst infeasible value is at index: {j}.\
+                         \nLower bound: {}, value: {}, upper bound: {}\
+                         \nParameter block values: {parameters:?}",
+                        fmt_e(lower_bound, 0, 6, false),
+                        fmt_e(parameters[j], 0, 6, false),
+                        fmt_e(upper_bound, 0, 6, false),
+                    ));
+                }
+            }
+        } else {
+            // Variable parameter blocks must have non-empty feasible
+            // regions, otherwise there is no way to produce a feasible
+            // solution.
+            for j in 0..size {
+                let lower_bound = parameter_block.lower_bound_for_parameter(j);
+                let upper_bound = parameter_block.upper_bound_for_parameter(j);
+                if lower_bound >= upper_bound {
+                    return Err(format!(
+                        "ParameterBlock: {id:?} with size {size} has at least one infeasible bound.\
+                         \nFirst infeasible bound is at index: {j}.\
+                         \nLower bound: {}, upper bound: {}\
+                         \nParameter block values: {parameters:?}",
+                        fmt_e(lower_bound, 0, 6, false),
+                        fmt_e(upper_bound, 0, 6, false),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A cell of a [`BlockJacobian`]: a dense row-major block.

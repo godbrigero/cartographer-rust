@@ -505,11 +505,7 @@ impl PoseExtrapolatorInterface for ImuBasedPoseExtrapolator {
                     problem.set_parameter_block_constant(gravity);
                 } else {
                     // Force gravity constant to be positive.
-                    // RUST PORT NOTE: the `ceres` crate does not support
-                    // parameter bounds (`SetParameterLowerBound(&gravity, 0,
-                    // 0.0)`), so the gravity constant is unconstrained here.
-                    // It starts at 9.8 and is pinned by the acceleration
-                    // residuals, so the bound is inactive in practice.
+                    problem.set_parameter_lower_bound(gravity, 0, 0.0);
                 }
             }
             problem.add_residual_block(

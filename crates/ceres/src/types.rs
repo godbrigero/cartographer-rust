@@ -113,6 +113,22 @@ ceres_enum! {
 }
 
 ceres_enum! {
+    /// Polynomial interpolation used by the line search to select the next
+    /// trial step size (C++ `LineSearchInterpolationType`).
+    ///
+    /// RUST PORT NOTE: only the Armijo line search used by the trust region
+    /// minimizer for bounds constrained problems is ported.
+    pub enum LineSearchInterpolationType {
+        /// Halve the step size.
+        Bisection => "BISECTION",
+        /// Quadratic interpolation.
+        Quadratic => "QUADRATIC",
+        /// Cubic interpolation.
+        Cubic => "CUBIC",
+    }
+}
+
+ceres_enum! {
     /// How the solver logs progress.
     pub enum LoggingType {
         /// No logging.

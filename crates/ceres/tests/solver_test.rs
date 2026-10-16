@@ -1261,3 +1261,446 @@ fn full_report_format() {
         assert!(report.contains(line), "missing {line:?} in\n{report}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Parameter bounds: trust_region_minimizer_test.cc,
+// trust_region_preprocessor_test.cc and program_test.cc bound tests, plus
+// bounded least squares problems (no upstream counterpart).
+// ---------------------------------------------------------------------------
+
+struct ExpCostFunctor;
+
+impl CostFunctor for ExpCostFunctor {
+    fn evaluate<T: Scalar>(&self, x: &[&[T]], residual: &mut [T]) -> bool {
+        residual[0] = T::constant(10.0) - x[0][0].exp();
+        true
+    }
+}
+
+// TrustRegionMinimizer.GradientToleranceConvergenceUpdatesStep
+#[test]
+fn trust_region_minimizer_gradient_tolerance_convergence_updates_step() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[5.0]);
+    problem.add_residual_block(
+        Box::new(AutoDiffCostFunction::<_, 1>::new(ExpCostFunctor, 1, &[1])),
+        None,
+        &[x],
+    );
+    problem.set_parameter_lower_bound(x, 0, 3.0);
+    let mut summary = SolverSummary::default();
+    solve(&silent_options(), &mut problem, &mut summary);
+    assert!((3.0 - problem.parameter_block(x)[0]).abs() <= 1e-12);
+    let expected_final_cost = 0.5 * (10.0 - 3f64.exp()).powi(2);
+    assert!((expected_final_cost - summary.final_cost).abs() <= 1e-12);
+    assert!(summary.is_constrained);
+}
+
+// TrustRegionPreprocessor.ParameterBlockBoundsAreInvalid and
+// Program.InfeasibleParameterBlock
+#[test]
+fn solver_parameter_block_bounds_are_invalid() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0]);
+    problem.add_residual_block(
+        Box::new(AutoDiffCostFunction::<_, 1>::new(ExpCostFunctor, 1, &[1])),
+        None,
+        &[x],
+    );
+    problem.set_parameter_upper_bound(x, 0, 1.0);
+    problem.set_parameter_lower_bound(x, 0, 2.0);
+    let mut summary = SolverSummary::default();
+    solve(&silent_options(), &mut problem, &mut summary);
+    assert_eq!(summary.termination_type, TerminationType::Failure);
+    assert!(
+        summary
+            .message
+            .contains("has at least one infeasible bound."),
+        "{}",
+        summary.message
+    );
+    assert!(
+        summary.message.contains(
+            "First infeasible bound is at index: 0.\nLower bound: 2.000000e+00, upper bound: 1.000000e+00"
+        ),
+        "{}",
+        summary.message
+    );
+    // The parameters are left unchanged.
+    assert_eq!(problem.parameter_block(x), &[1.0]);
+}
+
+// TrustRegionPreprocessor.ParamterBlockIsInfeasible and
+// Program.InfeasibleConstantParameterBlock
+#[test]
+fn solver_constant_parameter_block_is_infeasible() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[0.0, 0.0]);
+    let y = problem.add_parameter_block(&[1.0]);
+    problem.add_residual_block(
+        Box::new(AutoDiffCostFunction::<_, 1>::new(ExpCostFunctor, 1, &[1])),
+        None,
+        &[y],
+    );
+    problem.set_parameter_lower_bound(x, 0, 1.0);
+    problem.set_parameter_upper_bound(x, 0, 2.0);
+    problem.set_parameter_block_constant(x);
+    let mut summary = SolverSummary::default();
+    solve(&silent_options(), &mut problem, &mut summary);
+    assert_eq!(summary.termination_type, TerminationType::Failure);
+    assert!(
+        summary
+            .message
+            .contains("has at least one infeasible value.")
+            && summary.message.contains(
+                "First infeasible value is at index: 0.\nLower bound: 1.000000e+00, value: \
+                 0.000000e+00, upper bound: 2.000000e+00"
+            ),
+        "{}",
+        summary.message
+    );
+
+    // A constant block inside its bounds is fine, and a constant block does
+    // not make the problem constrained.
+    problem.set_parameter_block_values(x, &[1.5, 0.0]);
+    solve(&silent_options(), &mut problem, &mut summary);
+    assert_eq!(summary.termination_type, TerminationType::Convergence);
+    assert!(!summary.is_constrained);
+}
+
+// LinearSolverAndEvaluatorCreationTest.MinimizerIsAwareOfBounds
+#[test]
+fn solver_minimizer_is_aware_of_bounds() {
+    for linear_solver_type in [
+        LinearSolverType::DenseQr,
+        LinearSolverType::DenseNormalCholesky,
+        LinearSolverType::SparseNormalCholesky,
+    ] {
+        let mut problem = Problem::new();
+        let x = problem.add_parameter_block(&[1.0]);
+        problem.add_residual_block(
+            Box::new(AutoDiffCostFunction::<_, 1>::new(ExpCostFunctor, 1, &[1])),
+            None,
+            &[x],
+        );
+        let options = SolverOptions {
+            linear_solver_type,
+            ..silent_options()
+        };
+        let mut summary = SolverSummary::default();
+        solve(&options, &mut problem, &mut summary);
+        assert!(!summary.is_constrained);
+        assert_eq!(summary.num_line_search_steps, 0);
+        assert!(!summary.full_report().contains("Line search steps"));
+
+        problem.set_parameter_block_values(x, &[1.0]);
+        problem.set_parameter_lower_bound(x, 0, 0.0);
+        solve(&options, &mut problem, &mut summary);
+        assert!(summary.is_constrained);
+        assert_eq!(summary.linear_solver_type_used, linear_solver_type);
+        let report = summary.full_report();
+        for line in [
+            "Line search steps",
+            "    Line search cost evaluation    ",
+            "    Line search gradient evaluation   ",
+            "  Line search polynomial minimization  ",
+        ] {
+            assert!(report.contains(line), "missing {line:?} in\n{report}");
+        }
+        assert!((problem.parameter_block(x)[0] - 10f64.ln()).abs() < 1e-8);
+    }
+}
+
+#[test]
+fn solver_invalid_line_search_options_terminate_with_failure() {
+    let mut problem = Problem::new();
+    let x = problem.add_parameter_block(&[1.0]);
+    problem.add_residual_block(
+        Box::new(AutoDiffCostFunction::<_, 1>::new(ExpCostFunctor, 1, &[1])),
+        None,
+        &[x],
+    );
+    for options in [
+        SolverOptions {
+            min_line_search_step_size: 0.0,
+            ..silent_options()
+        },
+        SolverOptions {
+            max_line_search_step_contraction: 0.7,
+            ..silent_options()
+        },
+        SolverOptions {
+            max_num_line_search_step_size_iterations: -1,
+            ..silent_options()
+        },
+        SolverOptions {
+            line_search_sufficient_function_decrease: 0.95,
+            ..silent_options()
+        },
+        SolverOptions {
+            max_line_search_step_expansion: 1.0,
+            ..silent_options()
+        },
+    ] {
+        assert!(options.is_valid().is_err());
+        let mut summary = SolverSummary::default();
+        solve(&options, &mut problem, &mut summary);
+        assert_eq!(summary.termination_type, TerminationType::Failure);
+        assert!(
+            summary.message.starts_with("Invalid configuration."),
+            "{}",
+            summary.message
+        );
+    }
+    // max_num_line_search_step_size_iterations = 0 is valid for the trust
+    // region minimizer (it disables the projected line search).
+    let options = SolverOptions {
+        max_num_line_search_step_size_iterations: 0,
+        ..silent_options()
+    };
+    assert!(options.is_valid().is_ok());
+}
+
+/// `y = exp(m x + c)` fitted to `CURVE_FITTING_DATA` with optional bounds
+/// on `m` (and optionally `m` held constant).
+fn fit_curve_with_bounds(
+    m0: f64,
+    m_lower: Option<f64>,
+    m_upper: Option<f64>,
+    m_constant: bool,
+    options: &SolverOptions,
+) -> (f64, f64, SolverSummary) {
+    let mut problem = Problem::new();
+    let m = problem.add_parameter_block(&[m0]);
+    let c = problem.add_parameter_block(&[0.0]);
+    for &[x, y] in &CURVE_FITTING_DATA {
+        problem.add_residual_block(
+            Box::new(AutoDiffCostFunction::<_, 2>::new(
+                ExponentialResidual { x, y },
+                1,
+                &[1, 1],
+            )),
+            None,
+            &[m, c],
+        );
+    }
+    if let Some(l) = m_lower {
+        problem.set_parameter_lower_bound(m, 0, l);
+    }
+    if let Some(u) = m_upper {
+        problem.set_parameter_upper_bound(m, 0, u);
+    }
+    if m_constant {
+        problem.set_parameter_block_constant(m);
+    }
+    let mut summary = SolverSummary::default();
+    solve(options, &mut problem, &mut summary);
+    (
+        problem.parameter_block(m)[0],
+        problem.parameter_block(c)[0],
+        summary,
+    )
+}
+
+fn curve_fitting_options() -> SolverOptions {
+    SolverOptions {
+        max_num_iterations: 1000,
+        linear_solver_type: LinearSolverType::DenseQr,
+        function_tolerance: 0.0,
+        gradient_tolerance: 1e-10,
+        parameter_tolerance: 0.0,
+        ..silent_options()
+    }
+}
+
+/// The unconstrained optimum (m = 0.291861) violates `m <= 0.25`: the
+/// solution must sit exactly on the bound.
+///
+/// Ceres' projected trust region method is known to be weak when a bound is
+/// active and the variables are coupled (upstream comment in
+/// `TrustRegionMinimizer::DoLineSearch`: "The current implementation does
+/// not do anything illegal but is incorrect and not terribly effective",
+/// https://github.com/ceres-solver/ceres-solver/issues/187): the Gauss-Newton
+/// step towards the unconstrained optimum is projected, which moves `c` in
+/// the wrong direction, so the solver only creeps towards the constrained
+/// optimum. The port reproduces this, so `c` is only checked loosely here.
+#[test]
+fn bounded_curve_fitting_active_upper_bound() {
+    let options = curve_fitting_options();
+    let (m, c, summary) = fit_curve_with_bounds(0.0, None, Some(0.25), false, &options);
+    assert!(summary.is_solution_usable(), "{}", summary.full_report());
+    assert!(summary.is_constrained);
+    assert!(summary.num_line_search_steps > 0);
+    assert_eq!(m, 0.25, "{}", summary.full_report());
+
+    // Reference: optimize c alone with m fixed on the bound.
+    let (m_fixed, c_fixed, fixed_summary) = fit_curve_with_bounds(0.25, None, None, true, &options);
+    assert_eq!(m_fixed, 0.25);
+    assert!((c - c_fixed).abs() < 0.01, "c = {c}, expected {c_fixed}");
+    assert!(summary.final_cost >= fixed_summary.final_cost - 1e-12);
+    assert!(
+        summary.final_cost < 1.01 * fixed_summary.final_cost,
+        "{} vs {}",
+        summary.final_cost,
+        fixed_summary.final_cost
+    );
+
+    // The bounded cost is worse than the unconstrained one, and the cost
+    // would decrease for m > 0.25 (the bound is active).
+    let (m_free, _, free_summary) = fit_curve_with_bounds(0.0, None, None, false, &options);
+    assert!(
+        (m_free - 0.291861).abs() < 2e-5,
+        "{m_free}\n{}",
+        free_summary.full_report()
+    );
+    assert!(summary.final_cost > free_summary.final_cost);
+    let cost_at = |m: f64| -> f64 {
+        CURVE_FITTING_DATA
+            .iter()
+            .map(|&[x, y]| 0.5 * (y - (m * x + c).exp()).powi(2))
+            .sum()
+    };
+    assert!(cost_at(0.25 + 1e-6) < cost_at(0.25));
+}
+
+/// Same with a lower bound above the unconstrained optimum, starting from an
+/// infeasible point: the initial point is projected onto the bounds.
+#[test]
+fn bounded_curve_fitting_active_lower_bound_from_infeasible_start() {
+    let options = curve_fitting_options();
+    let (m, c, summary) = fit_curve_with_bounds(0.0, Some(0.35), None, false, &options);
+    assert!(summary.is_solution_usable(), "{}", summary.full_report());
+    assert_eq!(m, 0.35);
+    let (_, c_fixed, fixed_summary) = fit_curve_with_bounds(0.35, None, None, true, &options);
+    assert!((c - c_fixed).abs() < 0.02, "c = {c}, expected {c_fixed}");
+    assert!(summary.final_cost >= fixed_summary.final_cost - 1e-12);
+    assert!(summary.final_cost < 1.02 * fixed_summary.final_cost);
+}
+
+/// Linear least squares `y = a (x - mean x) + b`: the columns of the
+/// Jacobian are orthogonal, so the projected Gauss-Newton step points at the
+/// constrained optimum `a = bound`, `b = mean(y)`. The first (regularized)
+/// step gets `b` close; afterwards the clipped `a` component dominates the
+/// model decrease, so steps are rejected / the line search fails and the
+/// solver stops near (not at) the constrained optimum, like upstream.
+#[test]
+fn bounded_linear_fit_active_bound() {
+    struct Line {
+        x: f64,
+        y: f64,
+    }
+    impl CostFunctor for Line {
+        fn evaluate<T: Scalar>(&self, p: &[&[T]], r: &mut [T]) -> bool {
+            r[0] = T::constant(self.y) - (p[0][0] * T::constant(self.x) + p[1][0]);
+            true
+        }
+    }
+    let n = CURVE_FITTING_DATA.len() as f64;
+    let mean_x = CURVE_FITTING_DATA.iter().map(|d| d[0]).sum::<f64>() / n;
+    let mean_y = CURVE_FITTING_DATA.iter().map(|d| d[1]).sum::<f64>() / n;
+    let solve_line = |bound: Option<f64>| {
+        let mut problem = Problem::new();
+        let a = problem.add_parameter_block(&[0.0]);
+        let b = problem.add_parameter_block(&[0.0]);
+        for &[x, y] in &CURVE_FITTING_DATA {
+            problem.add_residual_block(
+                Box::new(AutoDiffCostFunction::<_, 2>::new(
+                    Line { x: x - mean_x, y },
+                    1,
+                    &[1, 1],
+                )),
+                None,
+                &[a, b],
+            );
+        }
+        if let Some(bound) = bound {
+            problem.set_parameter_upper_bound(a, 0, bound);
+        }
+        let mut summary = SolverSummary::default();
+        solve(&curve_fitting_options(), &mut problem, &mut summary);
+        assert!(summary.is_solution_usable(), "{}", summary.full_report());
+        (
+            problem.parameter_block(a)[0],
+            problem.parameter_block(b)[0],
+            summary,
+        )
+    };
+    let (a_free, b_free, _) = solve_line(None);
+    assert!((b_free - mean_y).abs() < 1e-10);
+    assert!(a_free > 0.5);
+    let (a, b, summary) = solve_line(Some(0.5));
+    assert!(summary.is_constrained);
+    assert_eq!(a, 0.5);
+    assert!((b - mean_y).abs() < 1e-3, "b = {b}, expected {mean_y}");
+}
+
+/// A bound that is inactive at the optimum gives the unbounded result.
+#[test]
+fn bounded_curve_fitting_inactive_bound_matches_unbounded() {
+    let options = curve_fitting_options();
+    let (m_free, c_free, free_summary) = fit_curve_with_bounds(0.0, None, None, false, &options);
+    assert!(!free_summary.is_constrained);
+
+    // With the projected line search (default options): same optimum.
+    let (m, c, summary) = fit_curve_with_bounds(0.0, Some(-1.0), Some(1.0), false, &options);
+    assert!(summary.is_constrained);
+    assert!(summary.is_solution_usable());
+    // (The line search may shorten some steps, so the iterates differ.)
+    assert!((m - m_free).abs() < 1e-8, "{m} vs {m_free}");
+    assert!((c - c_free).abs() < 1e-8, "{c} vs {c_free}");
+    assert!((summary.final_cost - free_summary.final_cost).abs() < 1e-12);
+
+    // Without the line search the projection is the identity on inactive
+    // bounds, so the iterates are bit-for-bit those of the unbounded solve.
+    let no_line_search = SolverOptions {
+        max_num_line_search_step_size_iterations: 0,
+        ..options
+    };
+    let (m, c, summary) = fit_curve_with_bounds(0.0, Some(-1.0), Some(1.0), false, &no_line_search);
+    assert!(summary.is_constrained);
+    assert_eq!(summary.num_line_search_steps, 0);
+    assert_eq!(m, m_free);
+    assert_eq!(c, c_free);
+    assert_eq!(summary.final_cost, free_summary.final_cost);
+    assert_eq!(summary.iterations.len(), free_summary.iterations.len());
+}
+
+/// Cartographer's use: `SetParameterLowerBound(&gravity_constant, 0, 0.0)`.
+/// A scalar whose unconstrained optimum is negative ends on the bound 0.
+#[test]
+fn lower_bound_at_zero_like_gravity_constant() {
+    struct Shifted;
+    impl CostFunctor for Shifted {
+        fn evaluate<T: Scalar>(&self, p: &[&[T]], r: &mut [T]) -> bool {
+            r[0] = p[0][0] + T::constant(2.0);
+            r[1] = T::constant(0.5) * (p[1][0] - T::constant(1.0));
+            true
+        }
+    }
+    let mut problem = Problem::new();
+    let g = problem.add_parameter_block(&[9.8]);
+    let other = problem.add_parameter_block(&[0.0]);
+    problem.add_residual_block(
+        Box::new(AutoDiffCostFunction::<_, 2>::new(Shifted, 2, &[1, 1])),
+        None,
+        &[g, other],
+    );
+    problem.set_parameter_lower_bound(g, 0, 0.0);
+    let mut summary = SolverSummary::default();
+    solve(&silent_options(), &mut problem, &mut summary);
+    assert!(summary.is_solution_usable(), "{}", summary.full_report());
+    assert_eq!(problem.parameter_block(g)[0], 0.0);
+    // The first (Levenberg-Marquardt regularized) step reaches other =
+    // 0.9999; afterwards the step is dominated by the clipped gravity
+    // component and the function tolerance terminates the solve (upstream
+    // behaviour, see bounded_curve_fitting_active_upper_bound).
+    assert!(
+        (problem.parameter_block(other)[0] - 1.0).abs() < 1e-3,
+        "{}\n{}",
+        problem.parameter_block(other)[0],
+        summary.full_report()
+    );
+    assert_eq!(summary.termination_type, TerminationType::Convergence);
+    assert!(summary.num_line_search_steps >= 0);
+    assert!(summary.line_search_total_time_in_seconds >= 0.0);
+}

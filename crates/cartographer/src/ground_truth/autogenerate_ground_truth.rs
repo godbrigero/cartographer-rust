@@ -64,7 +64,7 @@ fn compute_submap_representative_node(pose_graph: &PoseGraph) -> Vec<i32> {
 
 /// Generates GroundTruth proto from the given pose graph using the specified
 /// criteria parameters. See
-/// 'https://google-cartographer.readthedocs.io/en/latest/evaluation.html' for
+/// <https://google-cartographer.readthedocs.io/en/latest/evaluation.html> for
 /// more details.
 ///
 /// Only trajectory 0 is used; all constraints must refer to trajectory 0 and

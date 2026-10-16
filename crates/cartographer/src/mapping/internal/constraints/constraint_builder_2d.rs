@@ -4,7 +4,7 @@
 //!
 //! * The C++ class is used through `this` from thread-pool tasks. Here the
 //!   state touched by tasks lives in an `Arc<Inner>` (options, Ceres matcher,
-//!   the `mutex_`-guarded [`State`] and the per-submap samplers) which the
+//!   the `mutex_`-guarded `State` and the per-submap samplers) which the
 //!   tasks capture. The thread pool (`Arc<dyn ThreadPoolInterface>`) is kept
 //!   in the outer [`ConstraintBuilder2D`] only: tasks never schedule further
 //!   work, and not capturing the pool avoids a task dropping the last handle

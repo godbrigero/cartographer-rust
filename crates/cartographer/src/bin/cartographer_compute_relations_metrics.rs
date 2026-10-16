@@ -36,8 +36,10 @@ struct Flags {
     read_text_file_with_unix_timestamps: bool,
 
     /// Enable exporting relation metrics as comma-separated values to
-    /// [pose_graph_filename].relation_metrics.csv
+    /// `[pose_graph_filename].relation_metrics.csv`
     #[arg(
+        help = "Enable exporting relation metrics as comma-separated values to \
+                [pose_graph_filename].relation_metrics.csv",
         long = "write_relation_metrics",
         num_args = 0..=1,
         default_value_t = false,

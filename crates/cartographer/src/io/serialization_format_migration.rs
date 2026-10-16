@@ -1,16 +1,35 @@
 //! Port of `cartographer/io/serialization_format_migration` (.h, .cc).
 //!
-//! Only [`migrate_submap_format_version1_to_version2`] is ported so far.
-//! `MigrateStreamVersion1ToVersion2` rebuilds a `PoseGraph3D` from the input
-//! stream and writes it with `WritePbStream`; it is ported together with
-//! `mapping::PoseGraph3D` and `io::internal::mapping_state_serialization`.
+//! RUST PORT NOTE: C++ loads `map_builder.lua` from the compile-time
+//! `kSourceDirectory + "/configuration_files"`; here
+//! `common::config::SOURCE_DIRECTORY` (the crate directory, which ships the
+//! byte-identical configuration files) plays that role.
+
+use std::sync::Arc;
 
 use nalgebra::{DVector, Quaternion};
 
+use crate::common::config::SOURCE_DIRECTORY;
+use crate::common::configuration_file_resolver::ConfigurationFileResolver;
+use crate::common::lua_parameter_dictionary::LuaParameterDictionary;
+use crate::common::thread_pool::{ThreadPool, ThreadPoolInterface};
+use crate::io::internal::mapping_state_serialization::{
+    FORMAT_VERSION_WITHOUT_SUBMAP_HISTOGRAMS, write_pb_stream,
+};
+use crate::io::proto_stream_deserializer::ProtoStreamDeserializer;
+use crate::io::proto_stream_interface::{ProtoStreamReaderInterface, ProtoStreamWriterInterface};
 use crate::mapping::id::{MapById, NodeId, SubmapId};
+use crate::mapping::internal::optimization::optimization_problem_3d::OptimizationProblem3D;
+use crate::mapping::internal::three_d::pose_graph_3d::PoseGraph3D;
 use crate::mapping::internal::three_d::scan_matching::rotational_scan_matcher::RotationalScanMatcher;
+use crate::mapping::map_builder_interface::create_map_builder_options;
+use crate::mapping::pose_graph::{self, PoseGraph};
+use crate::mapping::pose_graph_interface::PoseGraphInterface;
 use crate::mapping::proto;
+use crate::mapping::proto::{SerializedData, serialized_data::Data};
 use crate::mapping::trajectory_node;
+use crate::sensor;
+use crate::transform::rigid_transform::Rigid3d;
 use crate::transform::rigid_transform::{
     quaternion_conjugate, quaternion_mul, quaternion_squared_norm,
 };
@@ -25,6 +44,195 @@ fn eigen_quaternion_inverse(q: &Quaternion<f64>) -> Quaternion<f64> {
     } else {
         Quaternion::new(0., 0., 0., 0.)
     }
+}
+
+/// Reads a pbstream of format version 1 (or 2) from `input` into a 3D pose
+/// graph, adds rotational scan matcher histograms to its submaps (version 1
+/// only, see [`migrate_submap_format_version1_to_version2`]) and writes it to
+/// `output` in format version 2.
+///
+/// Panics (C++ `CHECK`/`LOG(FATAL)`) on 2D submaps, duplicate pose graph or
+/// options messages, non-contiguous trajectory ids and if `input` is not
+/// fully consumed.
+pub fn migrate_stream_version1_to_version2(
+    input: &mut dyn ProtoStreamReaderInterface,
+    output: &mut dyn ProtoStreamWriterInterface,
+    include_unfinished_submaps: bool,
+) {
+    let file_resolver =
+        ConfigurationFileResolver::new(vec![format!("{SOURCE_DIRECTORY}/configuration_files")]);
+    const CODE: &str = r#"
+      include "map_builder.lua"
+      MAP_BUILDER.use_trajectory_builder_3d = true
+      return MAP_BUILDER"#;
+    let lua_parameter_dictionary = LuaParameterDictionary::new(CODE, Box::new(file_resolver));
+    let options = create_map_builder_options(&lua_parameter_dictionary);
+
+    let thread_pool = Arc::new(ThreadPool::new(1));
+    assert!(
+        !options.use_trajectory_builder_2d,
+        "Check failed: !options.use_trajectory_builder_2d()"
+    );
+    // We always use 3D here. 2D submaps do not have histograms.
+    let pose_graph_options = options.pose_graph_options.clone().unwrap_or_default();
+    let pose_graph = PoseGraph3D::new(
+        &pose_graph_options,
+        Box::new(OptimizationProblem3D::new(
+            &pose_graph_options
+                .optimization_problem_options
+                .unwrap_or_default(),
+        )),
+        Arc::clone(&thread_pool) as Arc<dyn ThreadPoolInterface>,
+    );
+
+    let trajectory_builder_options = {
+        let mut deserializer = ProtoStreamDeserializer::new(&mut *input);
+
+        let pose_graph_proto = deserializer.pose_graph().clone();
+        let all_builder_options_proto = deserializer.all_trajectory_builder_options().clone();
+        let format_version = deserializer.header().format_version;
+
+        let mut trajectory_builder_options = Vec::new();
+        for (i, trajectory_proto) in pose_graph_proto.trajectory.iter().enumerate() {
+            trajectory_builder_options
+                .push(all_builder_options_proto.options_with_sensor_ids[i].clone());
+            assert_eq!(
+                trajectory_proto.trajectory_id,
+                i32::try_from(i).expect("too many trajectories"),
+                "Check failed: trajectory_proto.trajectory_id() == i"
+            );
+        }
+        // (The C++ "remapping" of constraint trajectory ids is the identity.)
+
+        let mut submap_poses: MapById<SubmapId, Rigid3d> = MapById::new();
+        for trajectory_proto in &pose_graph_proto.trajectory {
+            for submap_proto in &trajectory_proto.submap {
+                submap_poses.insert(
+                    &SubmapId::new(trajectory_proto.trajectory_id, submap_proto.submap_index),
+                    to_rigid3(&submap_proto.pose.unwrap_or_default()),
+                );
+            }
+        }
+        let mut node_poses: MapById<NodeId, Rigid3d> = MapById::new();
+        for trajectory_proto in &pose_graph_proto.trajectory {
+            for node_proto in &trajectory_proto.node {
+                node_poses.insert(
+                    &NodeId::new(trajectory_proto.trajectory_id, node_proto.node_index),
+                    to_rigid3(&node_proto.pose.unwrap_or_default()),
+                );
+            }
+        }
+
+        // Set global poses of landmarks.
+        for landmark in &pose_graph_proto.landmark_poses {
+            pose_graph.set_landmark_pose(
+                &landmark.landmark_id,
+                &to_rigid3(&landmark.global_pose.unwrap_or_default()),
+                true,
+            );
+        }
+
+        let mut submap_id_to_submap: MapById<SubmapId, proto::Submap> = MapById::new();
+        let mut node_id_to_node: MapById<NodeId, proto::Node> = MapById::new();
+        let mut proto = SerializedData::default();
+        while deserializer.read_next_serialized_data(&mut proto) {
+            match &proto.data {
+                Some(Data::PoseGraph(_)) => panic!(
+                    "Found multiple serialized `PoseGraph`. Serialized stream likely corrupt!."
+                ),
+                Some(Data::AllTrajectoryBuilderOptions(_)) => panic!(
+                    "Found multiple serialized `AllTrajectoryBuilderOptions`. Serialized stream \
+                     likely corrupt!."
+                ),
+                Some(Data::Submap(submap)) => {
+                    assert!(
+                        submap.submap_3d.is_some(),
+                        "Converting to the new submap format only makes sense for 3D."
+                    );
+                    let submap_id_proto = submap.submap_id.unwrap_or_default();
+                    submap_id_to_submap.insert(
+                        &SubmapId::new(submap_id_proto.trajectory_id, submap_id_proto.submap_index),
+                        submap.clone(),
+                    );
+                }
+                Some(Data::Node(node)) => {
+                    let node_id_proto = node.node_id.unwrap_or_default();
+                    let node_id =
+                        NodeId::new(node_id_proto.trajectory_id, node_id_proto.node_index);
+                    pose_graph.add_node_from_proto(node_poses.at(&node_id), node);
+                    node_id_to_node.insert(&node_id, node.clone());
+                }
+                Some(Data::TrajectoryData(trajectory_data)) => {
+                    pose_graph.set_trajectory_data_from_proto(trajectory_data);
+                }
+                Some(Data::ImuData(imu_data)) => pose_graph.add_imu_data(
+                    imu_data.trajectory_id,
+                    &sensor::imu_data::from_proto(&imu_data.imu_data.unwrap_or_default()),
+                ),
+                Some(Data::OdometryData(odometry_data)) => pose_graph.add_odometry_data(
+                    odometry_data.trajectory_id,
+                    &sensor::odometry_data::from_proto(
+                        &odometry_data.odometry_data.unwrap_or_default(),
+                    ),
+                ),
+                Some(Data::FixedFramePoseData(fixed_frame_pose_data)) => pose_graph
+                    .add_fixed_frame_pose_data(
+                        fixed_frame_pose_data.trajectory_id,
+                        &sensor::fixed_frame_pose_data::from_proto(
+                            &fixed_frame_pose_data
+                                .fixed_frame_pose_data
+                                .unwrap_or_default(),
+                        ),
+                    ),
+                Some(Data::LandmarkData(landmark_data)) => pose_graph.add_landmark_data(
+                    landmark_data.trajectory_id,
+                    &sensor::landmark_data::from_proto(
+                        &landmark_data.landmark_data.clone().unwrap_or_default(),
+                    ),
+                ),
+                None => log::warn!(
+                    "Skipping unknown message type in stream: \
+                     cartographer.mapping.proto.SerializedData"
+                ),
+            }
+        }
+
+        // TODO(schwoere): Remove backwards compatibility once the pbstream
+        // format version 2 is established.
+        if format_version == FORMAT_VERSION_WITHOUT_SUBMAP_HISTOGRAMS {
+            submap_id_to_submap = migrate_submap_format_version1_to_version2(
+                &submap_id_to_submap,
+                &node_id_to_node,
+                &pose_graph_proto,
+            );
+        }
+
+        for submap_id_submap in &submap_id_to_submap {
+            pose_graph.add_submap_from_proto(
+                submap_poses.at(&submap_id_submap.id),
+                submap_id_submap.data,
+            );
+        }
+
+        pose_graph
+            .add_serialized_constraints(&pose_graph::from_proto(&pose_graph_proto.constraint));
+        trajectory_builder_options
+    };
+    assert!(input.eof(), "Check failed: input->eof()");
+
+    // RUST PORT NOTE: the pose graph ingests the data above in work items on
+    // the thread pool; C++ serializes right away (racing with them). Wait
+    // until they have run so that everything is written.
+    pose_graph.wait_for_all_computations();
+    write_pb_stream(
+        &pose_graph,
+        &trajectory_builder_options,
+        output,
+        include_unfinished_submaps,
+    );
+    // The pose graph is dropped before the thread pool.
+    drop(pose_graph);
+    drop(thread_pool);
 }
 
 /// Adds rotational scan matcher histograms to 3D submaps of format version 1

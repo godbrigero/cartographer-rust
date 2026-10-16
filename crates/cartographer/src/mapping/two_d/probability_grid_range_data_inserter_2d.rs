@@ -4,7 +4,7 @@ use nalgebra::Vector2;
 
 use crate::common::lua_parameter_dictionary::LuaParameterDictionary;
 use crate::mapping::grid_interface::GridInterface;
-use crate::mapping::internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask;
+use crate::mapping::internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask_into;
 use crate::mapping::probability_values::{
     compute_lookup_table_to_apply_correspondence_cost_odds, odds,
 };
@@ -151,19 +151,23 @@ fn cast_rays(
     }
 
     // Now add the misses.
-    // RUST PORT NOTE: `ray_to_pixel_mask` returns a fresh `Vec` per ray, like
-    // the C++ `RayToPixelMask` returns a `std::vector`.
+    // RUST PORT NOTE: one pixel buffer is reused for all rays (the C++
+    // `RayToPixelMask` returns a fresh `std::vector` per ray); the cells and
+    // their update order are unchanged.
+    let mut pixel_mask = Vec::new();
     for end in &ends {
-        for cell_index in ray_to_pixel_mask(&begin, end, SUBPIXEL_SCALE) {
-            probability_grid.apply_lookup_table(&cell_index, miss_table);
+        ray_to_pixel_mask_into(&begin, end, SUBPIXEL_SCALE, &mut pixel_mask);
+        for cell_index in &pixel_mask {
+            probability_grid.apply_lookup_table(cell_index, miss_table);
         }
     }
 
     // Finally, compute and add empty rays based on misses in the range data.
     for missing_echo in range_data.misses.iter() {
         let end = superscaled_limits.get_cell_index(&missing_echo.position.xy());
-        for cell_index in ray_to_pixel_mask(&begin, &end, SUBPIXEL_SCALE) {
-            probability_grid.apply_lookup_table(&cell_index, miss_table);
+        ray_to_pixel_mask_into(&begin, &end, SUBPIXEL_SCALE, &mut pixel_mask);
+        for cell_index in &pixel_mask {
+            probability_grid.apply_lookup_table(cell_index, miss_table);
         }
     }
 }

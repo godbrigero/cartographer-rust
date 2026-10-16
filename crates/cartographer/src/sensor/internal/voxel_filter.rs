@@ -10,6 +10,7 @@
 //! | `VoxelFilter(const std::vector<RangeMeasurement>&, float)` | [`voxel_filter_range_measurements`] |
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use nalgebra::Vector3;
 
@@ -133,6 +134,38 @@ fn get_voxel_cell_index(point: &Vector3<f32>, resolution: f32) -> VoxelKeyType {
     (x << 42).wrapping_add(y << 21).wrapping_add(z)
 }
 
+/// Hasher for voxel keys: the splitmix64 finalizer of the `u64` key.
+///
+/// RUST PORT NOTE: performance only. The default SipHash is several times
+/// slower for these integer keys; the hash function does not influence which
+/// points are kept (only the per-voxel reservoir sampling in input order
+/// does), so results are identical.
+#[derive(Default)]
+struct VoxelKeyHasher(u64);
+
+impl Hasher for VoxelKeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Only used for non-`u64` keys (never by the voxel filter).
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
 fn randomized_voxel_filter_indices<T>(
     point_cloud: &[T],
     resolution: f32,
@@ -140,7 +173,11 @@ fn randomized_voxel_filter_indices<T>(
 ) -> Vec<bool> {
     // According to https://en.wikipedia.org/wiki/Reservoir_sampling
     let mut generator = MinStdRand0::new();
-    let mut voxel_count_and_point_index: HashMap<VoxelKeyType, (i32, usize)> = HashMap::new();
+    let mut voxel_count_and_point_index: HashMap<
+        VoxelKeyType,
+        (i32, usize),
+        BuildHasherDefault<VoxelKeyHasher>,
+    > = HashMap::with_capacity_and_hasher(point_cloud.len(), Default::default());
     for (i, point) in point_cloud.iter().enumerate() {
         let voxel = voxel_count_and_point_index
             .entry(get_voxel_cell_index(point_function(point), resolution))

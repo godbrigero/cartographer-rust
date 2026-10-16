@@ -10,7 +10,7 @@ use crate::mapping::grid_interface::GridInterface;
 use crate::mapping::internal::two_d::normal_estimation_2d::{
     create_normal_estimation_options_2d, estimate_normals_for_points,
 };
-use crate::mapping::internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask;
+use crate::mapping::internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask_into;
 use crate::mapping::internal::two_d::tsdf_2d::TSDF2D;
 use crate::mapping::proto;
 use crate::mapping::range_data_inserter_interface::RangeDataInserterInterface;
@@ -190,6 +190,9 @@ impl TSDFRangeDataInserter2D {
         };
 
         let origin = range_data.origin.xy();
+        // RUST PORT NOTE: one pixel buffer is reused for all rays (the C++
+        // `RayToPixelMask` returns a fresh `std::vector` per ray).
+        let mut ray_mask = Vec::new();
         for (hit_index, hit) in returns.iter().enumerate() {
             let hit = hit.position.xy();
             let normal = if normals.is_empty() {
@@ -197,7 +200,7 @@ impl TSDFRangeDataInserter2D {
             } else {
                 normals[hit_index]
             };
-            self.insert_hit(&hit, &origin, normal, tsdf);
+            self.insert_hit(&hit, &origin, normal, tsdf, &mut ray_mask);
         }
         tsdf.finish_update();
     }
@@ -208,6 +211,7 @@ impl TSDFRangeDataInserter2D {
         origin: &Vector2<f32>,
         normal: f32,
         tsdf: &mut TSDF2D,
+        ray_mask: &mut Vec<Array2i>,
     ) {
         let ray = hit - origin;
         let range = ray.norm();
@@ -223,9 +227,12 @@ impl TSDFRangeDataInserter2D {
         };
         let ray_end = origin + (1.0 + truncation_ratio) * ray;
         let (superscaled_begin, superscaled_end) = superscale_ray(&ray_begin, &ray_end, tsdf);
-        // RUST PORT NOTE: `ray_to_pixel_mask` returns a fresh `Vec` per ray,
-        // like the C++ `RayToPixelMask` returns a `std::vector`.
-        let ray_mask = ray_to_pixel_mask(&superscaled_begin, &superscaled_end, SUBPIXEL_SCALE);
+        ray_to_pixel_mask_into(
+            &superscaled_begin,
+            &superscaled_end,
+            SUBPIXEL_SCALE,
+            ray_mask,
+        );
 
         // Precompute weight factors.
         let mut weight_factor_angle_ray_normal = 1.0_f32;
@@ -252,7 +259,7 @@ impl TSDFRangeDataInserter2D {
         let distance_bandwidth = self
             .options
             .update_weight_distance_cell_to_hit_kernel_bandwidth;
-        for cell_index in &ray_mask {
+        for cell_index in ray_mask.iter() {
             if tsdf.cell_is_updated(cell_index) {
                 continue;
             }

@@ -25,24 +25,16 @@ pub fn create_ceres_solver_options_proto(
     proto
 }
 
-// PENDING(ceres): create_ceres_solver_options
-//
-// C++:
-//   ceres::Solver::Options CreateCeresSolverOptions(
-//       const proto::CeresSolverOptions& proto) {
-//     ceres::Solver::Options options;   // all other fields keep ceres defaults
-//     options.use_nonmonotonic_steps = proto.use_nonmonotonic_steps();
-//     options.max_num_iterations = proto.max_num_iterations();
-//     options.num_threads = proto.num_threads();
-//     return options;
-//   }
-//
-// To be implemented as
-//   pub fn create_ceres_solver_options(proto: &proto::CeresSolverOptions)
-//       -> ceres::SolverOptions
-// setting exactly `use_nonmonotonic_steps`, `max_num_iterations` and
-// `num_threads` on a default `ceres::SolverOptions` once `crates/ceres`
-// provides it.
+/// Builds Ceres solver options from `proto`. All other fields keep the Ceres
+/// defaults, as in C++.
+pub fn create_ceres_solver_options(proto: &proto::CeresSolverOptions) -> ceres::SolverOptions {
+    ceres::SolverOptions {
+        use_nonmonotonic_steps: proto.use_nonmonotonic_steps,
+        max_num_iterations: proto.max_num_iterations,
+        num_threads: proto.num_threads,
+        ..Default::default()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -58,6 +50,10 @@ mod tests {
         assert!(proto.use_nonmonotonic_steps);
         assert_eq!(proto.max_num_iterations, 10);
         assert_eq!(proto.num_threads, 2);
+        let options = create_ceres_solver_options(&proto);
+        assert!(options.use_nonmonotonic_steps);
+        assert_eq!(options.max_num_iterations, 10);
+        assert_eq!(options.num_threads, 2);
     }
 
     #[test]

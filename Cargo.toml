@@ -7,7 +7,8 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.88"
-repository = "https://github.com/cartographer-project/cartographer"
+# No `repository`: this port is not hosted at the upstream C++ repository
+# (set it once the Rust repository is public).
 
 [workspace.dependencies]
 nalgebra = "0.35"

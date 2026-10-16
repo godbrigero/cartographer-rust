@@ -24,6 +24,10 @@ fn main() {
     let mut protos = Vec::new();
     collect_protos(&root, &mut protos);
     println!("cargo:rerun-if-changed={}", root.display());
+    // `links = "cartographer"`: dependents' build scripts (cartographer-cloud)
+    // see this as `DEP_CARTOGRAPHER_PROTO_DIR`, so they can import these
+    // protos from a registry checkout too.
+    println!("cargo::metadata=proto_dir={}", root.display());
     let file_descriptors =
         protox::compile(&protos, [&root]).expect("failed to compile Cartographer protos");
     let mut config = prost_build::Config::new();

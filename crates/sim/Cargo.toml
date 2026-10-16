@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# Test-data generator for this workspace; not published (see RELEASING.md).
+publish = false
 
 [lib]
 name = "cartographer_sim"

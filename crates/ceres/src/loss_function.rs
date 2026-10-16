@@ -278,7 +278,7 @@ impl LossFunction for ArctanLoss {
 /// transition occurs, and the transition size parameter 'b' sets the nominal
 /// distance over which most of the transition occurs. Both a and b must be
 /// greater than zero, and typically b will be set to a fraction of a. The
-/// slope rho'[s] varies smoothly from about 0 at s <= a - b to about 1 at
+/// slope rho'\[s\] varies smoothly from about 0 at s <= a - b to about 1 at
 /// s >= a + b.
 ///
 /// The term is computed as:

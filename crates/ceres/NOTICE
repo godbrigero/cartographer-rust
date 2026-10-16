@@ -1,0 +1,16 @@
+cartographer-ceres is part of cartographer-rust, a Rust port of Google
+Cartographer (https://github.com/cartographer-project/cartographer).
+
+This crate contains code ported from Ceres Solver 2.0.0
+(http://ceres-solver.org/):
+
+    Ceres Solver - A fast non-linear least squares minimizer
+    Copyright 2015-2019 Google Inc. All rights reserved.
+
+Ceres Solver is distributed under the New BSD (BSD-3-Clause) license, whose
+full text is reproduced in LICENSE-CERES. The remaining code of this crate is
+licensed under the Apache License, Version 2.0 (see LICENSE), like
+Cartographer:
+
+    Copyright 2016 The Cartographer Authors (Google Inc. and other
+    contributors)

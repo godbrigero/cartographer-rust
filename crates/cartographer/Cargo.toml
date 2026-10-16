@@ -5,6 +5,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+documentation = "https://docs.rs/cartographer"
+readme = "README.md"
+keywords = ["slam", "lidar", "robotics", "mapping", "localization"]
+categories = ["science::robotics", "algorithms"]
+# Exposes the absolute path of `proto/` to dependents' build scripts as
+# `DEP_CARTOGRAPHER_PROTO_DIR` (see build.rs); cartographer-cloud uses it.
+links = "cartographer"
+# Tests, examples and benches use the unpublished `cartographer-sim` crate,
+# so they stay in the repository only.
+include = [
+    "/src/**/*.rs",
+    "/proto/**/*.proto",
+    "/configuration_files/*.lua",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 # Keep `cargo bench` to the criterion benches (the unit tests have no
@@ -12,7 +34,7 @@ rust-version.workspace = true
 bench = false
 
 [dependencies]
-ceres = { package = "cartographer-ceres", path = "../ceres" }
+ceres = { package = "cartographer-ceres", version = "0.1.0", path = "../ceres" }
 nalgebra.workspace = true
 prost.workspace = true
 flate2.workspace = true
@@ -31,6 +53,7 @@ protox.workspace = true
 approx.workspace = true
 proptest.workspace = true
 rand.workspace = true
+# Unpublished (publish = false): path-only, so `cargo package` strips it.
 cartographer-sim = { path = "../sim" }
 criterion.workspace = true
 

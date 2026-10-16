@@ -3,8 +3,27 @@ name = "cartographer-ceres"
 description = "Focused pure-Rust port of the subset of Ceres Solver used by Cartographer"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# Ported Ceres Solver code is BSD-3-Clause (LICENSE-CERES); the rest is
+# Apache-2.0 like Cartographer (LICENSE). See NOTICE.
+license = "Apache-2.0 AND BSD-3-Clause"
 rust-version.workspace = true
+documentation = "https://docs.rs/cartographer-ceres"
+readme = "README.md"
+keywords = ["least-squares", "optimization", "autodiff", "ceres", "solver"]
+categories = ["mathematics", "science", "algorithms"]
+include = [
+    "/src/**/*.rs",
+    "/tests/**/*.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/DESIGN.md",
+    "/LICENSE",
+    "/LICENSE-CERES",
+    "/NOTICE",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 name = "ceres"

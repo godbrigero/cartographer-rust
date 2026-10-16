@@ -1,0 +1,15 @@
+This crate is part of cartographer-rust, a Rust port of Google Cartographer
+(https://github.com/cartographer-project/cartographer).
+
+Copyright 2016 The Cartographer Authors
+
+Cartographer is licensed under the Apache License, Version 2.0 (see
+LICENSE). The original copyright holders are listed in Cartographer's
+AUTHORS file:
+
+    Google Inc.
+    and other contributors
+
+The `.proto` schemas in this crate are copied unmodified from Cartographer;
+the Rust sources are a port (derivative work) of Cartographer's C++ sources
+(cartographer/cloud).

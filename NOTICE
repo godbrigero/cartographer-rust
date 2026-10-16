@@ -1,0 +1,18 @@
+cartographer-rust
+Copyright 2016 The Cartographer Authors
+
+This product is a Rust port of Google Cartographer
+(https://github.com/cartographer-project/cartographer), which is licensed
+under the Apache License, Version 2.0 (see LICENSE). The original copyright
+holders are listed in Cartographer's AUTHORS file:
+
+    Google Inc.
+    and other contributors
+
+The `cartographer-ceres` crate (crates/ceres) additionally contains code
+ported from Ceres Solver 2.0.0 (http://ceres-solver.org/), Copyright
+2015-2019 Google Inc., distributed under the New BSD (BSD-3-Clause) license;
+see crates/ceres/LICENSE-CERES.
+
+The `.proto` schemas and `.lua` configuration files are copied unmodified
+from Cartographer.

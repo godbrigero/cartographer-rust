@@ -14,7 +14,13 @@ use std::path::PathBuf;
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let cloud_proto_root = manifest_dir.join("proto");
-    let core_proto_root = manifest_dir.join("../cartographer/proto");
+    // Published by the `cartographer` build script (`links = "cartographer"`,
+    // `cargo::metadata=proto_dir=...`); works for path and registry builds.
+    // The in-repo path is only a fallback.
+    println!("cargo:rerun-if-env-changed=DEP_CARTOGRAPHER_PROTO_DIR");
+    let core_proto_root = std::env::var_os("DEP_CARTOGRAPHER_PROTO_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("../cartographer/proto"));
     let protos = [
         cloud_proto_root.join("cartographer/cloud/proto/map_builder_server_options.proto"),
         cloud_proto_root.join("cartographer/cloud/proto/map_builder_service.proto"),

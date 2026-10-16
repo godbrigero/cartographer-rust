@@ -152,3 +152,218 @@ impl Corrector {
         }
     }
 }
+
+// Ported from Ceres Solver 2.0.0: internal/ceres/corrector_test.cc.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::{DMatrix, DVector};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    // If rho[1] is zero, the Corrector constructor should crash.
+    #[test]
+    #[should_panic]
+    fn zero_gradient_death_test() {
+        let k_rho = [0.0, 0.0, 1.0];
+        let _ = Corrector::new(1.0, &k_rho);
+    }
+
+    // If rho[1] is negative, the Corrector constructor should crash.
+    #[test]
+    #[should_panic]
+    fn negative_gradient_death_test() {
+        let k_rho = [0.0, -0.1, 1.0];
+        let _ = Corrector::new(1.0, &k_rho);
+    }
+
+    #[test]
+    fn scalar_correction() {
+        let mut residuals = 3.0f64.sqrt();
+        let mut jacobian = 10.0;
+        let sq_norm = residuals * residuals;
+
+        let k_rho = [sq_norm, 0.1, -0.01];
+
+        // In light of the rho'' < 0 clamping now implemented in corrector.cc,
+        // alpha = 0 whenever rho'' < 0.
+        let k_alpha = 0.0;
+
+        // Thus the expected value of the residual is
+        // residual[i] * sqrt(kRho[1]) / (1.0 - kAlpha).
+        let k_expected_residual = residuals * k_rho[1].sqrt() / (1.0 - k_alpha);
+
+        // The jacobian in this case will be
+        // sqrt(kRho[1]) * (1 - kAlpha) * jacobian.
+        let k_expected_jacobian = k_rho[1].sqrt() * (1.0 - k_alpha) * jacobian;
+
+        let c = Corrector::new(sq_norm, &k_rho);
+        c.correct_jacobian(1, 1, &[residuals], std::slice::from_mut(&mut jacobian));
+        c.correct_residuals(std::slice::from_mut(&mut residuals));
+
+        assert!((residuals - k_expected_residual).abs() <= 1e-6);
+        assert!((k_expected_jacobian - jacobian).abs() <= 1e-6);
+    }
+
+    #[test]
+    fn scalar_correction_zero_residual() {
+        let mut residuals = 0.0f64;
+        let mut jacobian = 10.0;
+        let sq_norm = residuals * residuals;
+
+        let k_rho = [0.0f64, 0.1, -0.01];
+        let c = Corrector::new(sq_norm, &k_rho);
+
+        // The alpha equation is
+        // 1/2 alpha^2 - alpha + 0.0 = 0.
+        // i.e. alpha = 1.0 - sqrt(1.0).
+        //      alpha = 0.0.
+        // i.e. alpha = 0.0
+        let k_expected_residual = residuals * k_rho[1].sqrt();
+
+        // The jacobian in this case will be
+        // sqrt(kRho[1]) * jacobian.
+        let k_expected_jacobian = k_rho[1].sqrt() * jacobian;
+
+        c.correct_jacobian(1, 1, &[residuals], std::slice::from_mut(&mut jacobian));
+        c.correct_residuals(std::slice::from_mut(&mut residuals));
+
+        assert!((residuals - k_expected_residual).abs() <= 1e-6);
+        assert!((k_expected_jacobian - jacobian).abs() <= 1e-6);
+    }
+
+    // Scaling behaviour for one dimensional functions.
+    #[test]
+    fn scalar_correction_alpha_clamped() {
+        let mut residuals = 3.0f64.sqrt();
+        let mut jacobian = 10.0;
+        let sq_norm = residuals * residuals;
+
+        let k_rho = [3.0f64, 0.1, -0.1];
+
+        // rho[2] < 0 -> alpha = 0.0
+        let k_alpha = 0.0;
+
+        // Thus the expected value of the residual is
+        // residual[i] * sqrt(kRho[1]) / (1.0 - kAlpha).
+        let k_expected_residual = residuals * k_rho[1].sqrt() / (1.0 - k_alpha);
+
+        // The jacobian in this case will be scaled by
+        // sqrt(rho[1]) * (1 - alpha) * J.
+        let k_expected_jacobian = k_rho[1].sqrt() * (1.0 - k_alpha) * jacobian;
+
+        let c = Corrector::new(sq_norm, &k_rho);
+        c.correct_jacobian(1, 1, &[residuals], std::slice::from_mut(&mut jacobian));
+        c.correct_residuals(std::slice::from_mut(&mut residuals));
+
+        assert!((residuals - k_expected_residual).abs() <= 1e-6);
+        assert!((k_expected_jacobian - jacobian).abs() <= 1e-6);
+    }
+
+    // Row-major 3x2 jacobian (C++ MatrixRef).
+    fn jac_matrix(j: &[f64; 6]) -> DMatrix<f64> {
+        DMatrix::from_row_slice(3, 2, j)
+    }
+
+    // Test that the corrected multidimensional residual and jacobians match
+    // the expected values and the resulting modified normal equations match
+    // the robustified gauss newton approximation.
+    #[test]
+    fn multidimensional_gauss_newton_approximation() {
+        let mut residuals = [0.0; 3];
+        let mut jacobian = [0.0; 6];
+        let mut rho = [0.0; 3];
+
+        let mut rng = StdRng::seed_from_u64(5);
+        for _ in 0..10000 {
+            // Initialize the jacobian and residual.
+            for j in &mut jacobian {
+                *j = rng.random::<f64>();
+            }
+            for r in &mut residuals {
+                *r = rng.random::<f64>();
+            }
+            let jac = jac_matrix(&jacobian);
+            let res = DVector::from_column_slice(&residuals);
+
+            let sq_norm = res.dot(&res);
+
+            rho[0] = sq_norm;
+            rho[1] = rng.random::<f64>();
+            rho[2] = 2.0 * rng.random::<f64>() - 1.0;
+
+            // If rho[2] > 0, then the curvature correction to the correction
+            // and the gauss newton approximation will match. Otherwise, we
+            // expect alpha to be 0.
+            let k_d = 1.0 + 2.0 * rho[2] / rho[1] * sq_norm;
+            let k_alpha = if rho[2] > 0.0 { 1.0 - k_d.sqrt() } else { 0.0 };
+
+            // Ground truth values.
+            let g_res = (rho[1].sqrt() / (1.0 - k_alpha)) * &res;
+            let g_jac =
+                rho[1].sqrt() * (&jac - (k_alpha / sq_norm) * &res * res.transpose() * &jac);
+            let g_grad = rho[1] * jac.transpose() * &res;
+
+            let c = Corrector::new(sq_norm, &rho);
+            c.correct_jacobian(3, 2, &residuals, &mut jacobian);
+            c.correct_residuals(&mut residuals);
+
+            let jac = jac_matrix(&jacobian);
+            let res = DVector::from_column_slice(&residuals);
+
+            // Corrected gradient.
+            let c_grad = jac.transpose() * &res;
+
+            assert!((g_res - &res).norm() <= 1e-10);
+            assert!((g_jac - &jac).norm() <= 1e-10);
+            assert!((g_grad - c_grad).norm() <= 1e-10);
+        }
+    }
+
+    #[test]
+    fn multidimensional_gauss_newton_approximation_zero_residual() {
+        let mut jacobian = [0.0; 6];
+        let mut rho = [0.0; 3];
+
+        let mut rng = StdRng::seed_from_u64(5);
+        for _ in 0..10000 {
+            // Initialize the jacobian.
+            for j in &mut jacobian {
+                *j = rng.random::<f64>();
+            }
+            // Zero residuals
+            let mut residuals = [0.0; 3];
+            let jac = jac_matrix(&jacobian);
+            let res = DVector::from_column_slice(&residuals);
+
+            let sq_norm = res.dot(&res);
+
+            rho[0] = sq_norm;
+            rho[1] = rng.random::<f64>();
+            rho[2] = 2.0 * rng.random::<f64>() - 1.0;
+
+            // Ground truth values.
+            let g_res = rho[1].sqrt() * &res;
+            let g_jac = rho[1].sqrt() * &jac;
+            let g_grad = rho[1] * jac.transpose() * &res;
+            let g_hess = rho[1] * jac.transpose() * &jac
+                + 2.0 * rho[2] * jac.transpose() * &res * res.transpose() * &jac;
+
+            let c = Corrector::new(sq_norm, &rho);
+            c.correct_jacobian(3, 2, &residuals, &mut jacobian);
+            c.correct_residuals(&mut residuals);
+
+            let jac = jac_matrix(&jacobian);
+            let res = DVector::from_column_slice(&residuals);
+
+            // Corrected gradient and hessian.
+            let c_grad = jac.transpose() * &res;
+            let c_hess = jac.transpose() * &jac;
+
+            assert!((g_res - &res).norm() <= 1e-10);
+            assert!((g_jac - &jac).norm() <= 1e-10);
+            assert!((g_grad - c_grad).norm() <= 1e-10);
+            assert!((g_hess - c_hess).norm() <= 1e-10);
+        }
+    }
+}

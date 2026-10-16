@@ -278,7 +278,7 @@ impl LocalTrajectoryBuilder3D {
             .iter()
             .map(imu_data::from_proto)
             .collect();
-        initial_imu_data.push(imu_data.clone());
+        initial_imu_data.push(*imu_data);
         self.extrapolator = Some(create_with_imu_data(
             &self.options.pose_extrapolator_options.unwrap_or_default(),
             &initial_imu_data,
@@ -980,7 +980,7 @@ mod tests {
                 for direction_in_world_frame in
                     transform_timed_point_cloud(&directions_in_rangefinder_frame, &pose_f)
                 {
-                    let origin = &pose_f * &Vector3::<f32>::zeros();
+                    let origin = pose_f * Vector3::<f32>::zeros();
                     returns_in_world_frame.push(TimedRangefinderPoint {
                         position: self.collide_with_bubbles(
                             &origin,
@@ -1101,5 +1101,589 @@ mod tests {
             }
             assert_eq!(value, 4_123_659_995);
         }
+
+        // The tests below are not in the C++ suite; they cover the remaining
+        // branches of `AddRangeData` / `InsertIntoSubmap` with the same
+        // synthetic world.
+
+        fn builder_with(
+            options: &proto::LocalTrajectoryBuilderOptions3D,
+        ) -> (Fixture, Vec<TrajectoryNode>) {
+            let mut fixture = Fixture::new();
+            fixture.local_trajectory_builder =
+                Some(LocalTrajectoryBuilder3D::new(options, &[SENSOR_ID]));
+            (fixture, Fixture::generate_corkscrew_trajectory())
+        }
+
+        #[test]
+        fn requires_imu_before_range_data() {
+            let (mut fixture, trajectory) =
+                builder_with(&Fixture::create_trajectory_builder_options_3d());
+            let node = &trajectory[0];
+            let point_cloud = fixture.generate_point_cloud_data(&node.pose, node.time);
+            let builder = fixture.local_trajectory_builder.as_mut().unwrap();
+            // Odometry before the extrapolator exists is ignored.
+            builder.add_odometry_data(&OdometryData {
+                time: node.time,
+                pose: Rigid3d::identity(),
+            });
+            assert!(builder.add_range_data(SENSOR_ID, &point_cloud).is_none());
+            fixture.add_linear_only_imu_observation(node.time, &node.pose);
+            let builder = fixture.local_trajectory_builder.as_mut().unwrap();
+            builder.add_odometry_data(&OdometryData {
+                time: node.time,
+                pose: Rigid3d::identity(),
+            });
+            let result = builder.add_range_data(SENSOR_ID, &point_cloud).unwrap();
+            assert_is_nearly(&result.local_pose, &node.pose, 1e-1);
+        }
+
+        #[test]
+        fn insertion_result_contents() {
+            let (mut fixture, trajectory) =
+                builder_with(&Fixture::create_trajectory_builder_options_3d());
+            let node = &trajectory[0];
+            fixture.add_linear_only_imu_observation(node.time, &node.pose);
+            let point_cloud = fixture.generate_point_cloud_data(&node.pose, node.time);
+            let result = fixture
+                .local_trajectory_builder
+                .as_mut()
+                .unwrap()
+                .add_range_data(SENSOR_ID, &point_cloud)
+                .unwrap();
+            assert_eq!(result.time, node.time);
+            // No submap yet: the prediction (identity) is used as is.
+            assert_eq!(result.local_pose, Rigid3d::identity());
+            assert!(!result.range_data_in_local.returns.is_empty());
+            let insertion_result = result.insertion_result.unwrap();
+            let constant_data = &insertion_result.constant_data;
+            assert_eq!(constant_data.time, node.time);
+            assert_eq!(constant_data.local_pose, result.local_pose);
+            assert!(
+                constant_data
+                    .filtered_gravity_aligned_point_cloud
+                    .is_empty()
+            );
+            assert!(!constant_data.high_resolution_point_cloud.is_empty());
+            assert!(!constant_data.low_resolution_point_cloud.is_empty());
+            assert_eq!(constant_data.rotational_scan_matcher_histogram.len(), 120);
+            assert!(
+                angular_distance(&constant_data.gravity_alignment, &Quaternion::identity()) < 1e-6
+            );
+            assert_eq!(insertion_result.insertion_submaps.len(), 1);
+            assert_eq!(
+                insertion_result.insertion_submaps[0]
+                    .read()
+                    .unwrap()
+                    .num_range_data(),
+                1
+            );
+        }
+
+        #[test]
+        fn accumulates_range_data() {
+            let mut options = Fixture::create_trajectory_builder_options_3d();
+            options.num_accumulated_range_data = 2;
+            let (mut fixture, trajectory) = builder_with(&options);
+            let mut num_results = 0;
+            for (i, node) in trajectory.iter().take(6).enumerate() {
+                fixture.add_linear_only_imu_observation(node.time, &node.pose);
+                let point_cloud = fixture.generate_point_cloud_data(&node.pose, node.time);
+                let result = fixture
+                    .local_trajectory_builder
+                    .as_mut()
+                    .unwrap()
+                    .add_range_data(SENSOR_ID, &point_cloud);
+                assert_eq!(result.is_some(), i % 2 == 1, "scan {i}");
+                if let Some(result) = result {
+                    // The time of the last accumulated point.
+                    assert_eq!(result.time, node.time);
+                    num_results += 1;
+                }
+            }
+            assert_eq!(num_results, 3);
+        }
+
+        #[test]
+        fn motion_filter_drops_similar_poses() {
+            let mut options = Fixture::create_trajectory_builder_options_3d();
+            options.motion_filter_options = Some(proto::MotionFilterOptions {
+                max_time_seconds: 10.,
+                max_distance_meters: 0.02,
+                max_angle_radians: 0.001,
+            });
+            let (mut fixture, trajectory) = builder_with(&options);
+            // The first five nodes are stationary.
+            let mut inserted = Vec::new();
+            for node in trajectory.iter().take(5) {
+                fixture.add_linear_only_imu_observation(node.time, &node.pose);
+                let point_cloud = fixture.generate_point_cloud_data(&node.pose, node.time);
+                let result = fixture
+                    .local_trajectory_builder
+                    .as_mut()
+                    .unwrap()
+                    .add_range_data(SENSOR_ID, &point_cloud)
+                    .unwrap();
+                inserted.push(result.insertion_result.is_some());
+            }
+            assert_eq!(inserted, vec![true, false, false, false, false]);
+        }
+
+        #[test]
+        fn online_correlative_scan_matching() {
+            let mut options = Fixture::create_trajectory_builder_options_3d();
+            options.use_online_correlative_scan_matching = true;
+            let (mut fixture, trajectory) = builder_with(&options);
+            assert_eq!(fixture.verify_accuracy(&trajectory, 1e-1), 18);
+        }
+
+        #[test]
+        #[should_panic(expected = "inconsistent number of intensities and ranges")]
+        fn use_intensities_requires_intensities() {
+            let mut options = Fixture::create_trajectory_builder_options_3d();
+            options.use_intensities = true;
+            let (mut fixture, trajectory) = builder_with(&options);
+            let node = &trajectory[0];
+            let point_cloud = fixture.generate_point_cloud_data(&node.pose, node.time);
+            fixture
+                .local_trajectory_builder
+                .as_mut()
+                .unwrap()
+                .add_range_data(SENSOR_ID, &point_cloud);
+        }
+    }
+
+    mod register_metrics_test {
+        use super::*;
+        use crate::metrics::counter::Counter;
+        use crate::metrics::family_factory::Family;
+        use crate::metrics::histogram::BucketBoundaries;
+        use std::sync::Mutex;
+
+        struct RecordingFamily {
+            name: String,
+            added: &'static Mutex<Vec<String>>,
+        }
+
+        impl Family<dyn Gauge> for RecordingFamily {
+            fn add(&self, labels: &Labels) -> &'static dyn Gauge {
+                self.added
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}{labels:?}", self.name));
+                <dyn Gauge>::null()
+            }
+        }
+
+        impl Family<dyn Histogram> for RecordingFamily {
+            fn add(&self, labels: &Labels) -> &'static dyn Histogram {
+                self.added
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}{labels:?}", self.name));
+                <dyn Histogram>::null()
+            }
+        }
+
+        struct RecordingFactory {
+            added: &'static Mutex<Vec<String>>,
+            boundaries: Vec<(String, BucketBoundaries)>,
+        }
+
+        impl FamilyFactory for RecordingFactory {
+            fn new_counter_family(
+                &mut self,
+                _name: &str,
+                _description: &str,
+            ) -> &'static dyn Family<dyn Counter> {
+                panic!("no counters expected")
+            }
+            fn new_gauge_family(
+                &mut self,
+                name: &str,
+                _description: &str,
+            ) -> &'static dyn Family<dyn Gauge> {
+                Box::leak(Box::new(RecordingFamily {
+                    name: name.to_string(),
+                    added: self.added,
+                }))
+            }
+            fn new_histogram_family(
+                &mut self,
+                name: &str,
+                _description: &str,
+                boundaries: &BucketBoundaries,
+            ) -> &'static dyn Family<dyn Histogram> {
+                self.boundaries.push((name.to_string(), boundaries.clone()));
+                Box::leak(Box::new(RecordingFamily {
+                    name: name.to_string(),
+                    added: self.added,
+                }))
+            }
+        }
+
+        #[test]
+        fn registers_all_families() {
+            let added: &'static Mutex<Vec<String>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+            let mut factory = RecordingFactory {
+                added,
+                boundaries: Vec::new(),
+            };
+            LocalTrajectoryBuilder3D::register_metrics(&mut factory);
+            let added = added.lock().unwrap().clone();
+            assert_eq!(added.len(), 10);
+            assert_eq!(added[0], "mapping_3d_local_trajectory_builder_latency{}");
+            assert_eq!(
+                added[6],
+                "mapping_3d_local_trajectory_builder_scores{\"scan_matcher\": \"real_time_correlative\"}"
+            );
+            assert_eq!(
+                added[9],
+                "mapping_3d_local_trajectory_builder_residuals{\"component\": \"angle\"}"
+            );
+            assert_eq!(factory.boundaries.len(), 3);
+            assert_eq!(factory.boundaries[0].1.len(), 20);
+            // The registered metrics are the null ones here, so restoring the
+            // global state is not needed for other tests.
+        }
+    }
+
+    /// End-to-end local SLAM on data from `cartographer-sim` with the shipped
+    /// `trajectory_builder_3d.lua` defaults (not part of the C++ suite).
+    ///
+    /// Evaluation: the estimate is compared to ground truth at the result
+    /// time. The simulated trajectories start at full walking speed while
+    /// the constant-velocity extrapolator starts at zero velocity, so local
+    /// SLAM needs a few scans to catch up (most visible in the corridor,
+    /// whose long straight segments barely constrain the motion along the
+    /// corridor axis). The first `WARM_UP_SECONDS` of results are therefore
+    /// excluded from the thresholded metrics; the start-up error is reported
+    /// separately.
+    mod simulation_test {
+        use super::*;
+        use crate::common::config::SOURCE_DIRECTORY;
+        use crate::common::configuration_file_resolver::ConfigurationFileResolver;
+        use crate::common::lua_parameter_dictionary::LuaParameterDictionary;
+        use crate::common::time::from_universal;
+        use crate::mapping::internal::three_d::local_trajectory_builder_options_3d::create_local_trajectory_builder_options_3d;
+        use crate::sensor::rangefinder_point::TimedRangefinderPoint;
+        use cartographer_sim::metrics::{Alignment, PosePair, RpeDelta, ate, rpe};
+        use cartographer_sim::{
+            Dataset, DatasetBuilder, ImuConfig, Lidar3dConfig, SensorData, Trajectory, World3d,
+        };
+        use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+
+        /// Simulation time 0 in Cartographer time.
+        const BASE_UNIVERSAL: i64 = 638_000_000_000_000_000;
+        /// Results in the first seconds are excluded from the thresholds.
+        const WARM_UP_SECONDS: f64 = 2.;
+
+        fn to_time(seconds: f64) -> Time {
+            from_universal(BASE_UNIVERSAL) + from_seconds(seconds)
+        }
+
+        fn to_seconds_since_base(time: Time) -> f64 {
+            to_seconds(time - from_universal(BASE_UNIVERSAL))
+        }
+
+        fn default_options() -> proto::LocalTrajectoryBuilderOptions3D {
+            let dictionary = LuaParameterDictionary::non_reference_counted(
+                "include 'trajectory_builder_3d.lua' return TRAJECTORY_BUILDER_3D",
+                Box::new(ConfigurationFileResolver::new([format!(
+                    "{SOURCE_DIRECTORY}/configuration_files"
+                )])),
+            );
+            create_local_trajectory_builder_options_3d(&dictionary)
+        }
+
+        fn to_isometry(pose: &Rigid3d) -> Isometry3<f64> {
+            Isometry3::from_parts(
+                Translation3::from(*pose.translation()),
+                UnitQuaternion::new_normalize(*pose.rotation()),
+            )
+        }
+
+        /// Error of `b` relative to `a`: `(Q_a^-1 Q_b)^-1 (P_a^-1 P_b)`.
+        fn relative_error(a: &PosePair, b: &PosePair) -> Isometry3<f64> {
+            (a.reference.inverse() * b.reference).inverse() * (a.estimate.inverse() * b.estimate)
+        }
+
+        struct Accuracy {
+            num_scans: usize,
+            num_results: usize,
+            num_insertions: usize,
+            /// Max translation error relative to the first result during the
+            /// warm-up (m).
+            warm_up_error: f64,
+            /// ATE after rigid 3D alignment, after the warm-up (m / rad).
+            ate_translation_rmse: f64,
+            ate_rotation_max: f64,
+            /// RPE over 1 m of travelled distance, after the warm-up
+            /// (m / rad).
+            rpe_1m_translation_mean: f64,
+            rpe_1m_translation_max: f64,
+            rpe_1m_horizontal_mean: f64,
+            rpe_1m_horizontal_max: f64,
+            rpe_1m_vertical_max: f64,
+            rpe_1m_rotation_max: f64,
+            /// Error of the last pose relative to the first one after the
+            /// warm-up, without alignment: translation divided by the
+            /// travelled distance, and rotation (rad).
+            end_drift_ratio: f64,
+            end_rotation_error: f64,
+        }
+
+        /// Feeds the IMU and point clouds (identity extrinsics) of `dataset`
+        /// in time order and compares the local poses to ground truth.
+        fn run(dataset: &Dataset) -> Accuracy {
+            run_with_options(dataset, &default_options())
+        }
+
+        fn run_with_options(
+            dataset: &Dataset,
+            options: &proto::LocalTrajectoryBuilderOptions3D,
+        ) -> Accuracy {
+            let mut builder = LocalTrajectoryBuilder3D::new(options, &["points"]);
+            let mut pairs = Vec::new();
+            let (mut num_scans, mut num_insertions) = (0, 0);
+            for message in &dataset.messages {
+                match &message.data {
+                    SensorData::Imu(imu) => builder.add_imu_data(&ImuData {
+                        time: to_time(message.time),
+                        linear_acceleration: imu.linear_acceleration,
+                        angular_velocity: imu.angular_velocity,
+                    }),
+                    SensorData::PointCloud(cloud) => {
+                        num_scans += 1;
+                        let data = TimedPointCloudData {
+                            time: to_time(message.time),
+                            origin: cloud.origin,
+                            ranges: cloud
+                                .points
+                                .iter()
+                                .map(|p| TimedRangefinderPoint {
+                                    position: p.position,
+                                    time: p.time,
+                                })
+                                .collect(),
+                            intensities: cloud.intensities.clone(),
+                        };
+                        if let Some(result) = builder.add_range_data("points", &data) {
+                            if result.insertion_result.is_some() {
+                                num_insertions += 1;
+                            }
+                            let t = to_seconds_since_base(result.time);
+                            pairs.push(PosePair {
+                                time: t,
+                                reference: dataset.ground_truth_at(t).pose,
+                                estimate: to_isometry(&result.local_pose),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(pairs.len() > 10, "too few local SLAM results");
+            let start = pairs[0].time + WARM_UP_SECONDS;
+            let warm_up_error = pairs
+                .iter()
+                .take_while(|p| p.time < start)
+                .map(|p| relative_error(&pairs[0], p).translation.vector.norm())
+                .fold(0., f64::max);
+            let evaluated: Vec<PosePair> =
+                pairs.iter().filter(|p| p.time >= start).copied().collect();
+            let ate = ate(&evaluated, Alignment::Rigid3d);
+            let rpe = rpe(&evaluated, RpeDelta::Distance(1.));
+            // The same pairs as the RPE, with the error split into its
+            // horizontal and vertical parts.
+            let (mut horizontal, mut vertical) = (Vec::new(), Vec::new());
+            let mut j = 0;
+            for i in 0..evaluated.len() {
+                let distance = |j: usize| {
+                    dataset
+                        .trajectory
+                        .path_length(evaluated[i].time, evaluated[j].time)
+                };
+                j = j.max(i + 1);
+                while j < evaluated.len() && distance(j) < 1. {
+                    j += 1;
+                }
+                if j == evaluated.len() {
+                    break;
+                }
+                let e = relative_error(&evaluated[i], &evaluated[j])
+                    .translation
+                    .vector;
+                horizontal.push(e.xy().norm());
+                vertical.push(e.z.abs());
+            }
+            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            let max = |v: &[f64]| v.iter().copied().fold(0., f64::max);
+            let (first, last) = (evaluated.first().unwrap(), evaluated.last().unwrap());
+            let error = relative_error(first, last);
+            let distance = dataset.trajectory.path_length(first.time, last.time);
+            Accuracy {
+                num_scans,
+                num_results: pairs.len(),
+                num_insertions,
+                warm_up_error,
+                ate_translation_rmse: ate.translation.rmse,
+                ate_rotation_max: ate.rotation.max,
+                rpe_1m_translation_mean: rpe.translation.mean,
+                rpe_1m_translation_max: rpe.translation.max,
+                rpe_1m_horizontal_mean: mean(&horizontal),
+                rpe_1m_horizontal_max: max(&horizontal),
+                rpe_1m_vertical_max: max(&vertical),
+                rpe_1m_rotation_max: rpe.rotation.max,
+                end_drift_ratio: error.translation.vector.norm() / distance,
+                end_rotation_error: error.rotation.angle(),
+            }
+        }
+
+        fn report(name: &str, a: &Accuracy) {
+            println!(
+                "{name}: scans {} results {} insertions {} | warm-up error {:.3} m | \
+                 ATE rmse {:.4} m, rot max {:.5} rad | RPE(1 m) 3D mean {:.4} m, max {:.4} m; \
+                 horizontal mean {:.4} m, max {:.4} m; vertical max {:.4} m; rot max {:.5} rad | \
+                 end drift {:.3}%, end rot {:.5} rad",
+                a.num_scans,
+                a.num_results,
+                a.num_insertions,
+                a.warm_up_error,
+                a.ate_translation_rmse,
+                a.ate_rotation_max,
+                a.rpe_1m_translation_mean,
+                a.rpe_1m_translation_max,
+                a.rpe_1m_horizontal_mean,
+                a.rpe_1m_horizontal_max,
+                a.rpe_1m_vertical_max,
+                a.rpe_1m_rotation_max,
+                100. * a.end_drift_ratio,
+                a.end_rotation_error,
+            );
+        }
+
+        struct Thresholds {
+            rpe_1m_translation_mean: f64,
+            rpe_1m_horizontal_mean: f64,
+            rpe_1m_horizontal_max: f64,
+            rpe_1m_vertical_max: f64,
+            rpe_1m_rotation_max: f64,
+            ate_translation_rmse: f64,
+            ate_rotation_max: f64,
+            end_drift_ratio: f64,
+            end_rotation_error: f64,
+        }
+
+        fn check(a: &Accuracy, t: &Thresholds) {
+            // Every scan yields a result (the first one may be consumed by
+            // the extrapolator initialization).
+            assert!(
+                a.num_results + 1 >= a.num_scans,
+                "results {}",
+                a.num_results
+            );
+            assert!(a.num_insertions > a.num_results / 2);
+            assert!(a.rpe_1m_translation_mean < t.rpe_1m_translation_mean);
+            assert!(a.rpe_1m_horizontal_mean < t.rpe_1m_horizontal_mean);
+            assert!(a.rpe_1m_horizontal_max < t.rpe_1m_horizontal_max);
+            assert!(a.rpe_1m_vertical_max < t.rpe_1m_vertical_max);
+            assert!(a.rpe_1m_rotation_max < t.rpe_1m_rotation_max);
+            assert!(a.ate_translation_rmse < t.ate_translation_rmse);
+            assert!(a.ate_rotation_max < t.ate_rotation_max);
+            assert!(a.end_drift_ratio < t.end_drift_ratio);
+            assert!(a.end_rotation_error < t.end_rotation_error);
+        }
+
+        #[test]
+        fn loop_corridor_20s() {
+            // `World3d::loop_corridor`, 1.2 m/s handheld walking motion,
+            // VLP-16-like rotating LiDAR (2 cm noise) and a 200 Hz IMU with
+            // default noise; seed 3.
+            let dataset = DatasetBuilder::corridor_3d(1.0)
+                .seed(3)
+                .time_range(0., 20.)
+                .build();
+            let accuracy = run(&dataset);
+            report("loop corridor", &accuracy);
+            check(&accuracy, &CORRIDOR_THRESHOLDS);
+        }
+
+        #[test]
+        fn room_20s() {
+            // `World3d::room`, 0.8 m/s handheld walking motion, same sensors;
+            // seed 5.
+            let dataset =
+                DatasetBuilder::new(Trajectory::room_wander_3d(3.0, 0.8), World3d::room())
+                    .lidar_3d("points", Lidar3dConfig::default())
+                    .imu("imu", ImuConfig::default())
+                    .seed(5)
+                    .time_range(0., 20.)
+                    .build();
+            let accuracy = run(&dataset);
+            report("room", &accuracy);
+            check(&accuracy, &ROOM_THRESHOLDS);
+        }
+
+        #[test]
+        fn room_20s_with_intensities() {
+            // As `room_20s`, but with `use_intensities = true` (the shipped
+            // `intensity_cost_function_options_0` is used for the high
+            // resolution cloud; the simulated intensities are mostly below
+            // its threshold of 40 only for grazing or distant returns).
+            let dataset =
+                DatasetBuilder::new(Trajectory::room_wander_3d(3.0, 0.8), World3d::room())
+                    .lidar_3d("points", Lidar3dConfig::default())
+                    .imu("imu", ImuConfig::default())
+                    .seed(5)
+                    .time_range(0., 20.)
+                    .build();
+            let mut options = default_options();
+            options.use_intensities = true;
+            let accuracy = run_with_options(&dataset, &options);
+            report("room with intensities", &accuracy);
+            // The simulated intensity depends on range and incidence angle,
+            // i.e. on the viewpoint, so the intensity cost adds some bias;
+            // measured: RPE 3D mean 0.096 m, vertical max 0.36 m, end drift
+            // 2.7 %. Mainly a smoke test of the intensity path.
+            check(
+                &accuracy,
+                &Thresholds {
+                    rpe_1m_translation_mean: 0.15,
+                    rpe_1m_vertical_max: 0.55,
+                    end_drift_ratio: 0.04,
+                    ..THRESHOLDS
+                },
+            );
+        }
+
+        /// Thresholds for both scenes, about 1.5x the worst value measured
+        /// over seeds 3, 5 and 10..16 (corridor / room):
+        /// * RPE over 1 m, 3D mean: <= 0.077 / 0.083 m,
+        /// * RPE over 1 m, horizontal mean / max: <= 0.039 / 0.030 m and
+        ///   0.17 / 0.10 m,
+        /// * RPE over 1 m, vertical max: <= 0.15 / 0.22 m. The VLP-16-like
+        ///   +-15 deg field of view sees the floor and ceiling of the 3 m
+        ///   high worlds only beyond 4.5 m / 6.7 m, so height is the weakly
+        ///   observed direction and oscillates with the walking motion
+        ///   (the constant-velocity extrapolator has no vertical prior),
+        /// * RPE over 1 m, rotation max: <= 0.0102 / 0.0069 rad,
+        /// * ATE (rigid alignment) RMSE / rotation max: <= 0.128 / 0.063 m
+        ///   and 0.021 / 0.015 rad,
+        /// * end-to-start drift: <= 2.03 % / 1.35 % of the travelled
+        ///   distance and 0.009 / 0.017 rad.
+        const THRESHOLDS: Thresholds = Thresholds {
+            rpe_1m_translation_mean: 0.12,
+            rpe_1m_horizontal_mean: 0.06,
+            rpe_1m_horizontal_max: 0.25,
+            rpe_1m_vertical_max: 0.33,
+            rpe_1m_rotation_max: 0.015,
+            ate_translation_rmse: 0.2,
+            ate_rotation_max: 0.03,
+            end_drift_ratio: 0.03,
+            end_rotation_error: 0.025,
+        };
+        const CORRIDOR_THRESHOLDS: Thresholds = THRESHOLDS;
+        const ROOM_THRESHOLDS: Thresholds = THRESHOLDS;
     }
 }

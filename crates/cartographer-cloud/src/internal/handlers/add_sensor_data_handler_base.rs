@@ -79,3 +79,70 @@ pub async fn handle_add_sensor_data_stream<H: AddSensorDataHandler>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use tonic::Code;
+
+    use crate::internal::testing::handler_test::HandlerTest;
+    use crate::proto;
+
+    /// An unknown trajectory finishes the stream with `NOT_FOUND` and
+    /// nothing is enqueued.
+    #[test]
+    fn unknown_trajectory_is_not_found() {
+        let test = HandlerTest::new();
+        test.mock_map_builder_context
+            .set_check_client_id_result(false);
+        let request = proto::AddImuDataRequest {
+            sensor_metadata: Some(proto::SensorMetadata {
+                trajectory_id: 4,
+                sensor_id: "imu".to_string(),
+                client_id: "CLIENT_ID".to_string(),
+            }),
+            imu_data: Some(Default::default()),
+        };
+        let status = test
+            .call(|mut client| async move {
+                client
+                    .add_imu_data(tokio_stream::iter(vec![request.clone(), request]))
+                    .await
+            })
+            .unwrap_err();
+        assert_eq!(status.code(), Code::NotFound);
+        assert_eq!(status.message(), "Unknown trajectory");
+        assert!(
+            test.mock_map_builder_context
+                .enqueued_sensor_data()
+                .is_empty()
+        );
+    }
+
+    /// Every message of the stream is handled; the response comes after the
+    /// client finished writing.
+    #[test]
+    fn handles_every_streamed_message() {
+        let test = HandlerTest::new();
+        let requests: Vec<_> = (0..5)
+            .map(|i| proto::AddImuDataRequest {
+                sensor_metadata: Some(proto::SensorMetadata {
+                    trajectory_id: 2,
+                    sensor_id: "imu".to_string(),
+                    client_id: "CLIENT_ID".to_string(),
+                }),
+                imu_data: Some(cartographer::sensor::proto::ImuData {
+                    timestamp: i,
+                    ..Default::default()
+                }),
+            })
+            .collect();
+        test.call(
+            |mut client| async move { client.add_imu_data(tokio_stream::iter(requests)).await },
+        )
+        .unwrap();
+        assert_eq!(
+            test.mock_map_builder_context.enqueued_sensor_data().len(),
+            5
+        );
+    }
+}

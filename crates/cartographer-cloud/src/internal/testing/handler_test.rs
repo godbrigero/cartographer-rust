@@ -15,11 +15,14 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Channel;
 
 use crate::internal::async_grpc::{RuntimeHolder, create_channel, create_endpoint};
+use crate::internal::handlers::add_sensor_data_handler_base::SensorDataRequest;
 use crate::internal::handlers::create_map_builder_service;
 use crate::internal::map_builder_context_interface::MapBuilderContextInterface;
 use crate::internal::testing::fake_map_builder::{FakeMapBuilder, FakePoseGraph, MapBuilderScript};
 use crate::internal::testing::mock_local_trajectory_uploader::MockLocalTrajectoryUploader;
+use crate::internal::testing::mock_map_builder_context::ContextCall;
 use crate::internal::testing::mock_map_builder_context::MockMapBuilderContext;
+use crate::internal::testing::test_helpers::DataPredicateEquals;
 use crate::proto::map_builder_service_client::MapBuilderServiceClient;
 
 /// Test fixture serving the `MapBuilderService` with a mock context.
@@ -106,6 +109,33 @@ impl HandlerTest {
         Fut: Future<Output = T>,
     {
         self.runtime.block_on(f(self.client.clone()))
+    }
+
+    /// The common part of the `Add*DataHandlerTest`s: streams `request`
+    /// once through `rpc` (C++ `SendWrite` + `SendWritesDone` +
+    /// `SendFinish`) and checks the C++ expectations
+    /// `CheckClientIdForTrajectory(client_id, trajectory_id)` and
+    /// `DoEnqueueSensorData(trajectory_id, Pointee(Truly(
+    /// BuildDataPredicateEquals(request))))`.
+    pub fn send_sensor_data_and_expect_enqueued<R, F, Fut>(&self, request: &R, rpc: F)
+    where
+        R: SensorDataRequest + DataPredicateEquals + Clone,
+        F: FnOnce(MapBuilderServiceClient<Channel>, Vec<R>) -> Fut,
+        Fut: Future<Output = Result<tonic::Response<()>, tonic::Status>>,
+    {
+        let sensor_metadata = request.sensor_metadata();
+        self.call(|client| rpc(client, vec![request.clone()]))
+            .expect("Add*Data RPC failed");
+        assert!(self.mock_map_builder_context.calls().contains(
+            &ContextCall::CheckClientIdForTrajectory(
+                sensor_metadata.client_id.clone(),
+                sensor_metadata.trajectory_id,
+            )
+        ));
+        let enqueued = self.mock_map_builder_context.enqueued_sensor_data();
+        assert_eq!(enqueued.len(), 1, "{enqueued:?}");
+        assert_eq!(enqueued[0].0, sensor_metadata.trajectory_id);
+        assert!(request.data_equals(&enqueued[0].1), "{:?}", enqueued[0].1);
     }
 }
 

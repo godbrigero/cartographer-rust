@@ -99,7 +99,7 @@ impl TrajectoryBuilderInterface for MockTrajectoryBuilder {
     fn add_local_slam_result_data(&mut self, local_slam_result_data: Box<dyn LocalSlamResultData>) {
         self.record(
             CallKind::LocalSlamResult,
-            &local_slam_result_data.get_sensor_id().to_string(),
+            local_slam_result_data.get_sensor_id(),
             local_slam_result_data.get_time(),
         );
     }

@@ -154,11 +154,11 @@ impl TrajectoryBuilderInterface for CollatedTrajectoryBuilder {
     }
 
     fn add_imu_data(&mut self, sensor_id: &str, imu_data: &ImuData) {
-        self.add_data(make_dispatchable(sensor_id, imu_data.clone()));
+        self.add_data(make_dispatchable(sensor_id, *imu_data));
     }
 
     fn add_odometry_data(&mut self, sensor_id: &str, odometry_data: &OdometryData) {
-        self.add_data(make_dispatchable(sensor_id, odometry_data.clone()));
+        self.add_data(make_dispatchable(sensor_id, *odometry_data));
     }
 
     fn add_fixed_frame_pose_data(
@@ -167,7 +167,7 @@ impl TrajectoryBuilderInterface for CollatedTrajectoryBuilder {
         fixed_frame_pose_data: &FixedFramePoseData,
     ) {
         if self.collate_fixed_frame {
-            self.add_data(make_dispatchable(sensor_id, fixed_frame_pose_data.clone()));
+            self.add_data(make_dispatchable(sensor_id, *fixed_frame_pose_data));
             return;
         }
         lock(&self.handler)

@@ -255,7 +255,7 @@ mod tests {
             for x in -4..=4 {
                 for y in -4..=4 {
                     let (xf, yf) = (x as f32, y as f32);
-                    if x < -3 || x > 0 || y != x + 2 {
+                    if !(-3..=0).contains(&x) || y != x + 2 {
                         assert!(!f.is_known(xf, yf, 4.0));
                     } else {
                         near(
@@ -276,7 +276,7 @@ mod tests {
             for x in -4..=4 {
                 for y in -4..=4 {
                     let (xf, yf) = (x as f32, y as f32);
-                    if x < -3 || x > 0 || y != x + 2 {
+                    if !(-3..=0).contains(&x) || y != x + 2 {
                         assert!(!f.is_known(xf, yf, 4.0));
                         near(0.0, f.get_intensity(xf, yf, 4.0), 1e-6);
                     } else {

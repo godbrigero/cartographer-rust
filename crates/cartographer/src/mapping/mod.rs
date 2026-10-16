@@ -57,6 +57,7 @@ pub use internal::two_d::normal_estimation_2d::{
     create_normal_estimation_options_2d, estimate_normals,
 };
 pub use internal::two_d::overlapping_submaps_trimmer_2d::OverlappingSubmapsTrimmer2D;
+pub use internal::two_d::pose_graph_2d::PoseGraph2D;
 pub use internal::two_d::ray_to_pixel_mask::ray_to_pixel_mask;
 pub use internal::two_d::tsd_value_converter::TSDValueConverter;
 pub use internal::two_d::tsdf_2d::TSDF2D;
@@ -67,6 +68,10 @@ pub use pose_extrapolator::PoseExtrapolator;
 pub use pose_extrapolator_interface::{
     ExtrapolationResult, PoseExtrapolatorInterface, create_pose_extrapolator_options,
 };
+pub use pose_graph::{
+    InitialTrajectoryPose, PoseGraph, create_pose_graph_options, pose_graph_to_proto,
+};
+pub use pose_graph_interface::PoseGraphInterface;
 pub use pose_graph_interface::SubmapData;
 pub use pose_graph_trimmer::{PoseGraphTrimmer, PureLocalizationTrimmer, Trimmable};
 pub use range_data_inserter_interface::{

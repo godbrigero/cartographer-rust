@@ -9,6 +9,7 @@ pub mod imu_based_pose_extrapolator;
 pub mod local_slam_result_data;
 pub mod motion_filter;
 pub mod optimization;
+pub mod pose_graph_common;
 pub mod pose_graph_data;
 pub mod range_data_collator;
 pub mod scan_matching;

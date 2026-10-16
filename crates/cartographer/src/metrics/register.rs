@@ -4,7 +4,7 @@ use super::family_factory::FamilyFactory;
 
 /// Registers the metrics of all Cartographer components with `registry`.
 ///
-/// PENDING(mapping, sensor): the C++ version calls, in this order,
+/// PENDING(mapping): the C++ version calls, in this order,
 /// `mapping::constraints::ConstraintBuilder2D::RegisterMetrics(registry)`,
 /// `mapping::constraints::ConstraintBuilder3D::RegisterMetrics(registry)`,
 /// `mapping::GlobalTrajectoryBuilderRegisterMetrics(registry)`,
@@ -12,8 +12,8 @@ use super::family_factory::FamilyFactory;
 /// `mapping::LocalTrajectoryBuilder3D::RegisterMetrics(registry)`,
 /// `mapping::PoseGraph2D::RegisterMetrics(registry)`,
 /// `mapping::PoseGraph3D::RegisterMetrics(registry)` and
-/// `sensor::TrajectoryCollator::RegisterMetrics(registry)`. These calls must
-/// be added here once those modules are ported.
+/// `sensor::TrajectoryCollator::RegisterMetrics(registry)`. The mapping calls
+/// must be added here (before the sensor one) once those modules are ported.
 pub fn register_all_metrics(registry: &mut dyn FamilyFactory) {
-    let _ = registry;
+    crate::sensor::internal::trajectory_collator::TrajectoryCollator::register_metrics(registry);
 }

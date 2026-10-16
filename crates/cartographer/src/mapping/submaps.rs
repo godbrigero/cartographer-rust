@@ -8,6 +8,7 @@
 //! take a read lock. Such a handle coerces to `Arc<RwLock<dyn Submap>>` for
 //! code that only needs the polymorphic C++ `Submap` interface.
 
+use std::any::Any;
 use std::sync::LazyLock;
 
 use std::sync::{Arc, RwLock};
@@ -68,7 +69,11 @@ impl SubmapBase {
 /// keeps track of how many range data were inserted into it, and sets
 /// 'insertion_finished' when the map no longer changes and is ready for loop
 /// closing.
-pub trait Submap: Send + Sync {
+///
+/// RUST PORT NOTE: `Any` is a supertrait so that `&dyn Submap` can be upcast
+/// to `&dyn Any` and downcast to the concrete type (C++
+/// `std::static_pointer_cast<const Submap2D>`).
+pub trait Submap: Any + Send + Sync {
     /// Access to the shared base state.
     fn base(&self) -> &SubmapBase;
     /// Mutable access to the shared base state.

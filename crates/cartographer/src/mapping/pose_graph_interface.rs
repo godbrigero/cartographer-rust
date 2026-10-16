@@ -5,14 +5,18 @@
 //! ...) are free types of this module. Nested-nested types get flattened
 //! names: `Constraint::Pose` -> [`Pose`], `Constraint::Tag` -> [`Tag`],
 //! `LandmarkNode::LandmarkObservation` -> [`LandmarkObservation`].
-//! `SubmapData` (needs `Submap`) is not defined here yet.
+//! [`SubmapData`] holds the submap as `Arc<RwLock<dyn Submap>>` (see
+//! `mapping::submaps`).
 
 // NOTE: trait PoseGraphInterface added by the pose graph port
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::{Arc, RwLock};
 
 use crate::common::time::Time;
 use crate::mapping::id::{NodeId, SubmapId};
+use crate::mapping::submaps::Submap;
 use crate::transform::rigid_transform::Rigid3d;
 
 /// `PoseGraphInterface::Constraint::Pose`: the relative pose of a constraint
@@ -87,6 +91,30 @@ pub struct SubmapPose {
     pub version: i32,
     /// Global pose of the submap.
     pub pose: Rigid3d,
+}
+
+/// `PoseGraphInterface::SubmapData`: a submap and its global pose.
+///
+/// RUST PORT NOTE: C++ holds a `std::shared_ptr<const Submap>` (possibly
+/// null); here an optional shared handle. A `SharedSubmap<Submap2D>` /
+/// `SharedSubmap<Submap3D>` coerces to `Arc<RwLock<dyn Submap>>`; concrete
+/// types can be recovered by upcasting `&dyn Submap` to `&dyn Any` (C++
+/// `static_pointer_cast`).
+#[derive(Clone, Default)]
+pub struct SubmapData {
+    /// The submap (`None` = C++ null `shared_ptr`).
+    pub submap: Option<Arc<RwLock<dyn Submap>>>,
+    /// Global pose of the submap.
+    pub pose: Rigid3d,
+}
+
+impl fmt::Debug for SubmapData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubmapData")
+            .field("has_submap", &self.submap.is_some())
+            .field("pose", &self.pose)
+            .finish()
+    }
 }
 
 /// `PoseGraphInterface::TrajectoryData`.

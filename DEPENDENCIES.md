@@ -21,7 +21,8 @@ Versions were checked on crates.io on 2026-10-16.
 | Boost iostreams + zlib | gzip of `.pbstream` chunks | [`flate2`] 1.1 with the `rust_backend` (`miniz_oxide`) | Pure-Rust DEFLATE. Its output is standard gzip, which C++ reads. |
 | absl (Mutex, time, strings, containers, `make_unique`, `optional`) | utilities | `std` | `std::sync::{Mutex, Condvar}`, `Option`, `HashMap`/`BTreeMap`, and `String` utilities cover all uses. |
 | Cairo | submap painting, trajectory drawing, X-ray/probability-grid PNGs | `cartographer::io::cairo` (own pure-Rust code on raw ARGB32 buffers) + [`png`] 0.18 | See [Cairo](#cairo) below. |
-| gRPC / async_grpc | `cloud/` map builder server | `tonic` (optional, last) | Chosen when `cloud/` is ported. |
+| gRPC / async_grpc | `cloud/` map builder server, client stubs, uploader | [`tonic`] 0.14 (`default-features = false`, features `transport`, `codegen`, `router`) + [`tonic-prost`] 0.14 + [`tokio`] 1 (`rt-multi-thread`, `net`, `sync`, `time`, `macros`, `io-util`) + [`tokio-stream`] 0.1; codegen with [`tonic-prost-build`] 0.14 (`default-features = false`, `transport`) from protox file descriptors | Only in the separate `cartographer-cloud` crate. tonic is the standard pure-Rust gRPC stack (hyper/h2); it is wire-compatible with C++ gRPC (same `/cartographer.cloud.proto.MapBuilderService/<Rpc>` paths). **No TLS feature is enabled** (`tls-ring`/`tls-aws-lc` would pull C/assembly via ring or aws-lc), so channels are plaintext; `enable_ssl_encryption`/`enable_google_auth` are rejected with a clear panic. `cargo tree -p cartographer-cloud -e normal,build` contains no `cc`, `cmake`, `bindgen`, `pkg-config`, `ring`, `aws-lc*` or `openssl*` (only `libc`, Rust FFI declarations without C compilation, as used by tokio/mio). The `async_grpc` handler/retry framework is reimplemented in `internal/async_grpc.rs`. |
+| prometheus-cpp | `cloud/metrics/prometheus`, `/metrics` exposer of the gRPC server | [`prometheus-client`] 0.25 (default features, i.e. no protobuf) behind the default-on `prometheus` feature of `cartographer-cloud` | The official pure-Rust Prometheus client; its `Family<LabelSet, M>` supports arbitrary label sets per family like prometheus-cpp (the tikv `prometheus` crate needs label names up front). The HTTP exposer is a ~60-line tokio responder instead of an HTTP framework. |
 | gtest / gmock | tests | built-in `#[test]`, [`approx`], [`proptest`] | Hand-written fakes replace gmock mocks. |
 
 ## Cairo
@@ -85,6 +86,19 @@ same pixels, and we write the same `bKGD` chunk as Cairo.
 | approx | 0.5 | dev | yes |
 | proptest | 1 | dev | yes |
 | rand | 0.9 | dev | yes |
+| tonic (no TLS) | 0.14 | runtime, `cartographer-cloud` only | yes (hyper, h2, tower, axum router) |
+| tonic-prost | 0.14 | runtime, `cartographer-cloud` only | yes |
+| tokio | 1 | runtime, `cartographer-cloud` only | yes (mio; `libc`/`windows-sys` bindings only) |
+| tokio-stream | 0.1 | runtime, `cartographer-cloud` only | yes |
+| prometheus-client | 0.25 | runtime, `cartographer-cloud` feature `prometheus` (default) | yes |
+| tonic-prost-build | 0.14 | build, `cartographer-cloud` only | yes (fed by protox; never invokes `protoc`) |
+
+[`tonic`]: https://crates.io/crates/tonic
+[`tonic-prost`]: https://crates.io/crates/tonic-prost
+[`tonic-prost-build`]: https://crates.io/crates/tonic-prost-build
+[`tokio`]: https://crates.io/crates/tokio
+[`tokio-stream`]: https://crates.io/crates/tokio-stream
+[`prometheus-client`]: https://crates.io/crates/prometheus-client
 
 [`nalgebra`]: https://crates.io/crates/nalgebra
 [`prost`]: https://crates.io/crates/prost

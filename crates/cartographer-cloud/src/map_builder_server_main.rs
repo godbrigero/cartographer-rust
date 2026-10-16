@@ -22,21 +22,11 @@ struct Flags {
     configuration_basename: String,
 }
 
-/// Creates the concrete map builder for the server.
-///
-/// GAP: `cartographer::mapping::map_builder::MapBuilder` (C++
-/// `mapping::CreateMapBuilder`) is being ported separately; until it is
-/// merged the server cannot be started from this binary. Replace the body
-/// with `Ok(cartographer::mapping::map_builder::create_map_builder(options))`
-/// once it exists.
+/// Creates the concrete map builder (C++ `mapping::CreateMapBuilder`).
 fn create_map_builder(
-    _options: &cartographer::mapping::proto::MapBuilderOptions,
+    options: &cartographer::mapping::proto::MapBuilderOptions,
 ) -> Result<cartographer_cloud::internal::map_builder_context_interface::BoxedMapBuilder, String> {
-    Err(
-        "MapBuilder is not available in this build yet (the concrete MapBuilder port is \
-         pending)."
-            .to_string(),
-    )
+    Ok(Box::new(cartographer::mapping::MapBuilder::new(options)))
 }
 
 fn run(configuration_directory: &str, configuration_basename: &str) -> Result<(), String> {

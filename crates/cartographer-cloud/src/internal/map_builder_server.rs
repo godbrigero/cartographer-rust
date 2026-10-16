@@ -443,7 +443,9 @@ impl MapBuilderServer {
         self.state.clear_subscriptions();
         if let Some(runtime) = lock(&self.runtime).as_ref() {
             let abort_handle = server.task.abort_handle();
-            match runtime.block_on(tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, server.task)) {
+            match runtime.block_on(async {
+                tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, server.task).await
+            }) {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(e))) => log::error!("gRPC server error: {e}"),
                 Ok(Err(e)) => log::error!("gRPC server task failed: {e}"),

@@ -11,11 +11,11 @@
 //! paths (local SLAM result streaming, uplink uploading, state loading and
 //! serialization, invalid requests) with the fake map builder.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use cartographer::common::time::{Time, from_seconds, from_universal};
+use cartographer::common::time::{from_seconds, from_universal};
 use cartographer::io::internal::in_memory_proto_stream::{
     ForwardingProtoStreamWriter, InMemoryProtoStreamReader,
 };
@@ -30,7 +30,7 @@ use cartographer::mapping::internal::testing::test_helpers::{
     generate_fake_range_measurements, resolve_lua_parameters,
 };
 use cartographer::mapping::map_builder_interface::MapBuilderInterface;
-use cartographer::mapping::pose_graph_interface::TrajectoryState;
+use cartographer::mapping::pose_graph_interface::{PoseGraphInterface, TrajectoryState};
 use cartographer::mapping::proto as mapping_proto;
 use cartographer::mapping::submaps::Submap;
 use cartographer::mapping::trajectory_builder_interface::{
@@ -78,13 +78,8 @@ fn sensor_ids(ids: &[SensorId]) -> BTreeSet<SensorId> {
 }
 
 /// Creates the real map builder (C++ `mapping::CreateMapBuilder`).
-///
-/// GAP: the concrete `MapBuilder` is ported separately; once merged, replace
-/// the body with
-/// `Box::new(cartographer::mapping::map_builder::MapBuilder::new(options))`
-/// (or the corresponding factory) and remove the `#[ignore]`s.
-fn create_map_builder(_options: &mapping_proto::MapBuilderOptions) -> BoxedMapBuilder {
-    panic!("needs MapBuilder; enabled after merge")
+fn create_map_builder(options: &mapping_proto::MapBuilderOptions) -> BoxedMapBuilder {
+    Box::new(cartographer::mapping::MapBuilder::new(options))
 }
 
 /// Returns `127.0.0.1:<port>` of a free ephemeral port (for servers that
@@ -139,7 +134,9 @@ impl LocalSlamResults {
         let state = self.state.lock().unwrap();
         let (state, timeout) = self
             .condition
-            .wait_timeout_while(state, Duration::from_secs(120), |state| state.0.len() < size)
+            .wait_timeout_while(state, Duration::from_secs(120), |state| {
+                state.0.len() < size
+            })
             .unwrap();
         assert!(
             !timeout.timed_out(),
@@ -174,8 +171,8 @@ impl ClientServerTest {
     /// the uploading server can be configured before the main server starts.
     fn set_up() -> Self {
         let main_address = reserve_local_address();
-        let map_builder_server_options = create_map_builder_server_options(&resolve_lua_parameters(
-            &format!(
+        let map_builder_server_options =
+            create_map_builder_server_options(&resolve_lua_parameters(&format!(
                 r#"
                 include "map_builder_server.lua"
                 MAP_BUILDER.use_trajectory_builder_2d = true
@@ -185,8 +182,7 @@ impl ClientServerTest {
                 MAP_BUILDER_SERVER.uplink_server_address = ""
                 MAP_BUILDER_SERVER.server_address = "{main_address}"
                 return MAP_BUILDER_SERVER"#
-            ),
-        ));
+            )));
         let uploading_map_builder_server_options =
             create_map_builder_server_options(&resolve_lua_parameters(&format!(
                 r#"
@@ -204,13 +200,14 @@ impl ClientServerTest {
             map_builder_server_options.server_address,
             uploading_map_builder_server_options.server_address
         );
-        let trajectory_builder_options = create_trajectory_builder_options(&resolve_lua_parameters(
-            r#"
+        let trajectory_builder_options =
+            create_trajectory_builder_options(&resolve_lua_parameters(
+                r#"
             include "trajectory_builder.lua"
             TRAJECTORY_BUILDER.trajectory_builder_2d.use_imu_data = false
             TRAJECTORY_BUILDER.trajectory_builder_2d.submaps.num_range_data = 4
             return TRAJECTORY_BUILDER"#,
-        ));
+            ));
         Self {
             map_builder_server_options,
             uploading_map_builder_server_options,
@@ -376,8 +373,8 @@ impl ClientServerTest {
 
     fn expect_travelled_distance(&self) {
         let poses = self.local_slam_results.poses();
-        let distance = (poses.last().unwrap().translation() - poses.first().unwrap().translation())
-            .norm();
+        let distance =
+            (poses.last().unwrap().translation() - poses.first().unwrap().translation()).norm();
         assert!(
             (TRAVEL_DISTANCE - distance).abs() <= 0.1 * TRAVEL_DISTANCE,
             "travelled {distance}"
@@ -534,27 +531,37 @@ fn fake_add_trajectory_builder() {
     let trajectory_id =
         test.stub()
             .add_trajectory_builder(&sensor_ids(&[imu_sensor_id()]), &options, None);
-    assert!(!test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        !test
+            .stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     assert_eq!(test.stub().num_trajectory_builders(), 1);
     test.stub().finish_trajectory(trajectory_id);
     assert_eq!(test.stub().num_trajectory_builders(), 0);
-    assert!(test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        test.stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     assert!(!test.stub().pose_graph().is_trajectory_frozen(trajectory_id));
     assert_eq!(
         test.stub().pose_graph().get_trajectory_states(),
-        [(trajectory_id, TrajectoryState::Finished)].into_iter().collect()
+        [(trajectory_id, TrajectoryState::Finished)]
+            .into_iter()
+            .collect()
     );
     test.server().shutdown();
 }
 
 /// A fake local SLAM result with an inserted node and a submap.
 fn fake_insertion_result(trajectory_id: i32, node_index: i32) -> InsertionResult {
-    let mut active_submaps = ActiveSubmaps2D::new(&create_submaps_options_2d(
-        &resolve_lua_parameters(
+    let mut active_submaps =
+        ActiveSubmaps2D::new(&create_submaps_options_2d(&resolve_lua_parameters(
             r#"include "trajectory_builder_2d.lua"
             return TRAJECTORY_BUILDER_2D.submaps"#,
-        ),
-    ));
+        )));
     let submaps = active_submaps.insert_range_data(&RangeData {
         origin: Vector3::zeros(),
         returns: PointCloud::from_points(vec![RangefinderPoint {
@@ -637,12 +644,11 @@ fn fake_global_slam_optimizations_are_streamed() {
         .build()
         .unwrap();
     let mut stream = runtime.block_on(async {
-        let mut client =
-            proto::map_builder_service_client::MapBuilderServiceClient::connect(format!(
-                "http://{address}"
-            ))
-            .await
-            .unwrap();
+        let mut client = proto::map_builder_service_client::MapBuilderServiceClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        .unwrap();
         client
             .receive_global_slam_optimizations(())
             .await
@@ -712,11 +718,8 @@ fn fake_uploading_server_uploads_trajectory_and_local_slam_results() {
         }
     );
     // A local SLAM result with an insertion is uploaded (batch size 1).
-    let server_callback = uploading_script
-        .lock()
-        .unwrap()
-        .local_slam_result_callbacks[&trajectory_id]
-        .clone();
+    let server_callback =
+        uploading_script.lock().unwrap().local_slam_result_callbacks[&trajectory_id].clone();
     server_callback(
         trajectory_id,
         from_universal(1000),
@@ -772,8 +775,11 @@ fn fake_load_state() {
     // The client id was registered for the loaded trajectory, so it can be
     // deleted by this client.
     test.stub().pose_graph().delete_trajectory(0);
+    // A second load gets a new trajectory id (the server CHECKs that a
+    // trajectory id is registered only once).
+    script.lock().unwrap().trajectory_remapping = [(0, 1)].into_iter().collect();
     let trajectory_remapping = test.stub().load_state_from_file("some.pbstream", false);
-    assert_eq!(trajectory_remapping, [(0, 0)].into_iter().collect());
+    assert_eq!(trajectory_remapping, [(0, 1)].into_iter().collect());
     test.server().shutdown();
 }
 
@@ -826,7 +832,9 @@ fn fake_handles_invalid_requests() {
     test.server().start();
     test.initialize_stub();
     const INVALID_TRAJECTORY_ID: i32 = 7;
-    test.stub().pose_graph().delete_trajectory(INVALID_TRAJECTORY_ID);
+    test.stub()
+        .pose_graph()
+        .delete_trajectory(INVALID_TRAJECTORY_ID);
     assert!(
         !test
             .stub()
@@ -878,9 +886,17 @@ fn stub_fails_without_server() {
 // C++ tests with the real MapBuilder.
 // ---------------------------------------------------------------------------
 
-fn add_measurements(test: &mut ClientServerTest, trajectory_id: i32, range: std::ops::Range<usize>) {
+fn add_measurements(
+    test: &mut ClientServerTest,
+    trajectory_id: i32,
+    range: std::ops::Range<usize>,
+) {
     let measurements = generate_fake_range_measurements(TRAVEL_DISTANCE, DURATION, TIME_STEP);
-    let stub = test.stub_for_uploading_server.as_mut().or(test.stub.as_mut()).unwrap();
+    let stub = test
+        .stub_for_uploading_server
+        .as_mut()
+        .or(test.stub.as_mut())
+        .unwrap();
     let trajectory_stub = stub.get_trajectory_builder(trajectory_id).unwrap();
     for measurement in &measurements[range] {
         trajectory_stub.add_timed_point_cloud_data(&range_sensor_id().id, measurement);
@@ -892,7 +908,6 @@ fn number_of_measurements() -> usize {
 }
 
 #[test]
-#[ignore = "needs MapBuilder; enabled after merge"]
 fn start_and_stop_server() {
     let mut test = ClientServerTest::set_up();
     test.initialize_real_server();
@@ -909,9 +924,18 @@ fn add_trajectory_builder(grid_type: GridType) {
     let trajectory_id =
         test.stub()
             .add_trajectory_builder(&sensor_ids(&[imu_sensor_id()]), &options, None);
-    assert!(!test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        !test
+            .stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     test.stub().finish_trajectory(trajectory_id);
-    assert!(test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        test.stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     assert!(!test.stub().pose_graph().is_trajectory_frozen(trajectory_id));
     test.server().shutdown();
 }
@@ -968,7 +992,10 @@ fn local_slam_2d(grid_type: GridType) {
         test.stub().pose_graph().get_trajectory_states()[&trajectory_id],
         TrajectoryState::Finished
     );
-    assert_eq!(test.local_slam_results.poses().len(), number_of_measurements());
+    assert_eq!(
+        test.local_slam_results.poses().len(),
+        number_of_measurements()
+    );
     test.expect_travelled_distance();
     test.server().shutdown();
 }
@@ -1002,12 +1029,14 @@ fn local_slam_and_delete_2d(grid_type: GridType) {
         TrajectoryState::Deleted
     );
     assert_eq!(test.stub().pose_graph().get_all_submap_poses().size(), 0);
-    assert_eq!(test.stub().pose_graph().get_trajectory_node_poses().size(), 0);
+    assert_eq!(
+        test.stub().pose_graph().get_trajectory_node_poses().size(),
+        0
+    );
     test.server().shutdown();
 }
 
 #[test]
-#[ignore = "needs MapBuilder; enabled after merge"]
 fn global_slam_3d() {
     let mut test = ClientServerTest::set_up();
     {
@@ -1095,7 +1124,12 @@ fn add_trajectory_builder_with_uploading_server(grid_type: GridType) {
             .pose_graph()
             .is_trajectory_finished(trajectory_id)
     );
-    assert!(!test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        !test
+            .stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     test.stub_for_uploading_server()
         .finish_trajectory(trajectory_id);
     assert!(
@@ -1103,7 +1137,11 @@ fn add_trajectory_builder_with_uploading_server(grid_type: GridType) {
             .pose_graph()
             .is_trajectory_finished(trajectory_id)
     );
-    assert!(test.stub().pose_graph().is_trajectory_finished(trajectory_id));
+    assert!(
+        test.stub()
+            .pose_graph()
+            .is_trajectory_finished(trajectory_id)
+    );
     assert!(
         !test
             .stub_for_uploading_server()
@@ -1152,7 +1190,10 @@ fn local_slam_2d_with_uploading_server(grid_type: GridType) {
     drop(deserializer);
     test.stub_for_uploading_server()
         .finish_trajectory(trajectory_id);
-    assert_eq!(test.local_slam_results.poses().len(), number_of_measurements());
+    assert_eq!(
+        test.local_slam_results.poses().len(),
+        number_of_measurements()
+    );
     test.expect_travelled_distance();
     test.uploading_server().shutdown();
     test.server().shutdown();
@@ -1205,7 +1246,6 @@ fn local_slam_2d_uplink_server_restarting(grid_type: GridType) {
 }
 
 #[test]
-#[ignore = "needs MapBuilder; enabled after merge"]
 fn delayed_connection_to_uplink_server() {
     let mut test = ClientServerTest::set_up();
     test.initialize_real_uploading_server();
@@ -1298,7 +1338,9 @@ fn local_slam_2d_handles_invalid_requests(grid_type: GridType) {
     test.local_slam_results.wait_for(number_of_measurements());
     test.stub().pose_graph().run_final_optimization();
     const INVALID_TRAJECTORY_ID: i32 = 7;
-    test.stub().pose_graph().delete_trajectory(INVALID_TRAJECTORY_ID);
+    test.stub()
+        .pose_graph()
+        .delete_trajectory(INVALID_TRAJECTORY_ID);
     assert!(
         !test
             .stub()
@@ -1367,14 +1409,12 @@ macro_rules! by_grid_type {
                     use super::*;
 
                     #[test]
-                    #[ignore = "needs MapBuilder; enabled after merge"]
-                    fn probability_grid() {
+                                        fn probability_grid() {
                         ($body)(GridType::ProbabilityGrid);
                     }
 
                     #[test]
-                    #[ignore = "needs MapBuilder; enabled after merge"]
-                    fn tsdf() {
+                                        fn tsdf() {
                         ($body)(GridType::Tsdf);
                     }
                 }

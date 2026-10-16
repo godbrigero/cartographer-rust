@@ -2,3 +2,4 @@
 **/*.rs.bk
 /report/*.tmp
 /.claude/
+.DS_Store

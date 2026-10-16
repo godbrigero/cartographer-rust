@@ -161,17 +161,28 @@ mod porting_status {
             .collect()
     }
 
+    /// Names of functions (`fn name`) plus macro-generated test names
+    /// (`name => ...` entries of test-generating macros).
     fn rust_fn_names(src: &str) -> Vec<String> {
-        src.split("fn ")
+        let ident = |r: &str| {
+            r.chars()
+                .take_while(|&c| c == '_' || c.is_ascii_alphanumeric())
+                .collect::<String>()
+        };
+        let mut names: Vec<String> = src
+            .split("fn ")
             .skip(1)
-            .map(|r| {
-                normalize(
-                    &r.chars()
-                        .take_while(|&c| c == '_' || c.is_ascii_alphanumeric())
-                        .collect::<String>(),
-                )
-            })
-            .collect()
+            .map(|r| normalize(&ident(r)))
+            .collect();
+        for line in src.lines() {
+            if let Some((name, _)) = line.trim_start().split_once(" =>")
+                && !name.is_empty()
+                && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+            {
+                names.push(normalize(name));
+            }
+        }
+        names
     }
 
     fn count_rust_tests(src: &str) -> usize {
@@ -238,9 +249,18 @@ mod porting_status {
                 format!("crates/cartographer/src/{}/{f}.rs", rust_dir(d))
             };
             let moved = overrides.get(stem.as_str()).filter(|(k, _)| k == "moved");
-            let rust = moved.map_or(rust, |(_, path)| path.clone());
-            let rust_path = root.join(&rust);
-            let rust_src = fs::read_to_string(&rust_path).unwrap_or_default();
+            let files: Vec<String> = moved.map_or(vec![rust], |(_, paths)| {
+                paths.split(',').map(|p| p.trim().to_string()).collect()
+            });
+            let rust = files.join(", ");
+            let rust_path = root.join(&files[0]);
+            let rust_src: String = files
+                .iter()
+                .map(|f| {
+                    seen_rust.insert(root.join(f));
+                    fs::read_to_string(root.join(f)).unwrap_or_default()
+                })
+                .collect();
             seen_rust.insert(rust_path.clone());
             let ported = rust_src
                 .lines()
@@ -251,15 +271,16 @@ mod porting_status {
                 fs::read_to_string(cpp_root.join(format!("{stem}_test.cc"))).unwrap_or_default();
             let tests = cpp_tests(&test_src);
             let fns = rust_fn_names(&rust_src);
-            let ported_tests = tests
+            let unmatched: Vec<&String> = tests
                 .iter()
                 .filter(|t| {
                     let (suite, name) = t.split_once('.').unwrap();
                     let n = normalize(name);
                     let sn = normalize(&format!("{suite}{name}"));
-                    fns.iter().any(|f| f.starts_with(&n) || f.starts_with(&sn))
+                    !fns.iter().any(|f| f.starts_with(&n) || f.starts_with(&sn))
                 })
-                .count();
+                .collect();
+            let ported_tests = tests.len() - unmatched.len();
             let (na, note) = match overrides.get(stem.as_str()) {
                 Some((kind, n)) if kind == "n/a" => (true, Some(n.clone())),
                 Some((kind, _)) if kind == "moved" => (
@@ -268,6 +289,16 @@ mod porting_status {
                 ),
                 Some((_, n)) => (false, Some(n.clone())),
                 None => (false, None),
+            };
+            let note = if unmatched.is_empty() || !ported {
+                note
+            } else {
+                let list: Vec<&str> = unmatched.iter().map(|s| s.as_str()).collect();
+                Some(format!(
+                    "{}unmatched: {}",
+                    note.map(|n| n + "; ").unwrap_or_default(),
+                    list.join(", ")
+                ))
             };
             out.push(Unit {
                 cpp: stem.clone(),
@@ -413,6 +444,12 @@ mod porting_status {
             let src =
                 "TEST(A, B) {}\nTYPED_TEST(C, D) {}\nTEST(E,\n     F) {}\n  TEST(no, indent)\n";
             assert_eq!(super::cpp_tests(src), vec!["A.B", "C.D", "E.F"]);
+        }
+
+        #[test]
+        fn finds_fn_and_macro_test_names() {
+            let src = "fn foo_bar() {}\nby_grid! {\n    load_state => |g| x(g);\n}\n";
+            assert_eq!(super::rust_fn_names(src), vec!["foobar", "loadstate"]);
         }
     }
 }

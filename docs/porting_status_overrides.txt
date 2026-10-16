@@ -3,3 +3,7 @@ common/configuration_files | moved | crates/cartographer/tests/configuration_fil
 common/lua | n/a | `lua.h` only wraps the Lua C headers; replaced by the pure-Rust interpreter in `common/lua/`
 mapping/2d/range_data_inserter_2d | moved | crates/cartographer/src/mapping/two_d/probability_grid_range_data_inserter_2d.rs
 mapping/internal/2d/scan_matching/correlative_scan_matcher | moved | crates/cartographer/src/mapping/internal/two_d/scan_matching/correlative_scan_matcher_2d.rs
+cloud/internal/client_server | moved | crates/cartographer-cloud/tests/client_server_test.rs
+cloud/internal/testing/handler | moved | crates/cartographer-cloud/src/internal/testing/handler_test.rs
+cloud/map_builder_server_main | moved | crates/cartographer-cloud/src/map_builder_server_main.rs
+cloud/metrics/prometheus/metrics | moved | crates/cartographer-cloud/src/metrics/prometheus/family_factory.rs, crates/cartographer-cloud/src/metrics/prometheus/exposer.rs

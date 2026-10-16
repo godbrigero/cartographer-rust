@@ -1,49 +1,5 @@
 //! [`SlamConfig`]: typed, documented configuration on top of Cartographer's
-//! option protos.
-//!
-//! The defaults are **not** duplicated here: a `SlamConfig` is read from
-//! option protos generated from Lua (by default the configuration files
-//! shipped with Cartographer: `map_builder.lua`, `pose_graph.lua`,
-//! `trajectory_builder.lua`, `trajectory_builder_2d.lua`,
-//! `trajectory_builder_3d.lua`), and writing it back
-//! ([`SlamConfig::to_protos`]) only touches the fields listed below, so
-//! everything else keeps its Lua value.
-//!
-//! | Knob | 2D proto field (`TrajectoryBuilderOptions.trajectory_builder_2d_options.*`) | 3D proto field (`TrajectoryBuilderOptions.trajectory_builder_3d_options.*`) |
-//! |---|---|---|
-//! | `resolution` | `submaps_options.grid_options_2d.resolution` | `submaps_options.high_resolution` |
-//! | `min_range`, `max_range` | `min_range`, `max_range` | `min_range`, `max_range` |
-//! | `min_z`, `max_z` (2D) | `min_z`, `max_z` | – |
-//! | `missing_data_ray_length` (2D) | `missing_data_ray_length` | – |
-//! | `low_resolution` (3D) | – | `submaps_options.low_resolution` |
-//! | `high_resolution_max_range` (3D) | – | `submaps_options.high_resolution_max_range` |
-//! | `num_accumulated_range_data` | `num_accumulated_range_data` | `num_accumulated_range_data` |
-//! | `voxel_filter_size` | `voxel_filter_size` | `voxel_filter_size` |
-//! | `submap_num_range_data` | `submaps_options.num_range_data` | `submaps_options.num_range_data` |
-//! | `use_online_correlative_scan_matching` | `use_online_correlative_scan_matching` | `use_online_correlative_scan_matching` |
-//! | `scan_matcher.translation_weight` / `.rotation_weight` | `ceres_scan_matcher_options.translation_weight` / `.rotation_weight` | same |
-//! | `motion_filter.*` | `motion_filter_options.{max_time_seconds, max_distance_meters, max_angle_radians}` | same |
-//! | `imu_gravity_time_constant` | `imu_gravity_time_constant` **and** `pose_extrapolator_options.constant_velocity.imu_gravity_time_constant` | same |
-//!
-//! | Knob | Proto field |
-//! |---|---|
-//! | `num_background_threads` | `MapBuilderOptions.num_background_threads` |
-//! | `loop_closure.enabled` / `.optimize_every_n_nodes` | `MapBuilderOptions.pose_graph_options.optimize_every_n_nodes` (`0` = disabled) |
-//! | `loop_closure.min_score` | `pose_graph_options.constraint_builder_options.min_score` |
-//! | `loop_closure.sampling_ratio` | `pose_graph_options.constraint_builder_options.sampling_ratio` |
-//! | `loop_closure.max_constraint_distance` | `pose_graph_options.constraint_builder_options.max_constraint_distance` |
-//! | `loop_closure.translation_weight` / `.rotation_weight` | `pose_graph_options.constraint_builder_options.loop_closure_translation_weight` / `loop_closure_rotation_weight` |
-//! | `loop_closure.max_num_final_iterations` | `pose_graph_options.max_num_final_iterations` |
-//! | `global_localization.sampling_ratio` | `pose_graph_options.global_sampling_ratio` |
-//! | `global_localization.min_score` | `pose_graph_options.constraint_builder_options.global_localization_min_score` |
-//! | `global_localization.search_after_seconds` | `pose_graph_options.global_constraint_search_after_n_seconds` |
-//! | `optimization.*` | `pose_graph_options.optimization_problem_options.{odometry,local_slam_pose}_{translation,rotation}_weight` |
-//! | `pure_localization` | `TrajectoryBuilderOptions.pure_localization_trimmer.max_submaps_to_keep` (`None` = unset) |
-//!
-//! Derived (not knobs): `MapBuilderOptions.use_trajectory_builder_2d/3d`
-//! from the [`Mode`], and in 2D `trajectory_builder_2d_options.use_imu_data`
-//! from whether an IMU was declared on the [`SlamBuilder`](super::SlamBuilder).
-//! [`SlamConfig::advanced`] edits run last and may change anything.
+//! option protos (see [`SlamConfig`] for the knob → proto field table).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -152,9 +108,52 @@ type AdvancedFn = Arc<dyn Fn(&mut MapBuilderOptions, &mut TrajectoryBuilderOptio
 ///
 /// Create it with [`SlamConfig::new`] (Cartographer's shipped defaults) or
 /// [`SlamConfig::from_lua`], change the public fields, and optionally edit
-/// the raw option protos with [`SlamConfig::advanced`]. See the
-/// [module documentation](self) for which proto field each knob maps to.
-/// Units are SI (m, s, rad).
+/// the raw option protos with [`SlamConfig::advanced`]. Units are SI (m, s,
+/// rad).
+///
+/// The defaults are **not** duplicated in Rust: a `SlamConfig` is read from
+/// option protos generated from Lua (by default the configuration files
+/// shipped with Cartographer: `map_builder.lua`, `pose_graph.lua`,
+/// `trajectory_builder.lua`, `trajectory_builder_2d.lua`,
+/// `trajectory_builder_3d.lua`), and writing it back
+/// ([`SlamConfig::to_protos`]) only touches the fields listed below, so
+/// everything else keeps its Lua value.
+///
+/// | Knob | 2D proto field (`TrajectoryBuilderOptions.trajectory_builder_2d_options.*`) | 3D proto field (`TrajectoryBuilderOptions.trajectory_builder_3d_options.*`) |
+/// |---|---|---|
+/// | `resolution` | `submaps_options.grid_options_2d.resolution` | `submaps_options.high_resolution` |
+/// | `min_range`, `max_range` | `min_range`, `max_range` | `min_range`, `max_range` |
+/// | `min_z`, `max_z` (2D) | `min_z`, `max_z` | – |
+/// | `missing_data_ray_length` (2D) | `missing_data_ray_length` | – |
+/// | `low_resolution` (3D) | – | `submaps_options.low_resolution` |
+/// | `high_resolution_max_range` (3D) | – | `submaps_options.high_resolution_max_range` |
+/// | `num_accumulated_range_data` | `num_accumulated_range_data` | `num_accumulated_range_data` |
+/// | `voxel_filter_size` | `voxel_filter_size` | `voxel_filter_size` |
+/// | `submap_num_range_data` | `submaps_options.num_range_data` | `submaps_options.num_range_data` |
+/// | `use_online_correlative_scan_matching` | `use_online_correlative_scan_matching` | `use_online_correlative_scan_matching` |
+/// | `scan_matcher.translation_weight` / `.rotation_weight` | `ceres_scan_matcher_options.translation_weight` / `.rotation_weight` | same |
+/// | `motion_filter.*` | `motion_filter_options.{max_time_seconds, max_distance_meters, max_angle_radians}` | same |
+/// | `imu_gravity_time_constant` | `imu_gravity_time_constant` **and** `pose_extrapolator_options.constant_velocity.imu_gravity_time_constant` | same |
+///
+/// | Knob | Proto field |
+/// |---|---|
+/// | `num_background_threads` | `MapBuilderOptions.num_background_threads` |
+/// | `loop_closure.enabled` / `.optimize_every_n_nodes` | `MapBuilderOptions.pose_graph_options.optimize_every_n_nodes` (`0` = disabled) |
+/// | `loop_closure.min_score` | `pose_graph_options.constraint_builder_options.min_score` |
+/// | `loop_closure.sampling_ratio` | `pose_graph_options.constraint_builder_options.sampling_ratio` |
+/// | `loop_closure.max_constraint_distance` | `pose_graph_options.constraint_builder_options.max_constraint_distance` |
+/// | `loop_closure.translation_weight` / `.rotation_weight` | `pose_graph_options.constraint_builder_options.loop_closure_translation_weight` / `loop_closure_rotation_weight` |
+/// | `loop_closure.max_num_final_iterations` | `pose_graph_options.max_num_final_iterations` |
+/// | `global_localization.sampling_ratio` | `pose_graph_options.global_sampling_ratio` |
+/// | `global_localization.min_score` | `pose_graph_options.constraint_builder_options.global_localization_min_score` |
+/// | `global_localization.search_after_seconds` | `pose_graph_options.global_constraint_search_after_n_seconds` |
+/// | `optimization.*` | `pose_graph_options.optimization_problem_options.{odometry,local_slam_pose}_{translation,rotation}_weight` |
+/// | `pure_localization` | `TrajectoryBuilderOptions.pure_localization_trimmer.max_submaps_to_keep` (`None` = unset) |
+///
+/// Derived (not knobs): `MapBuilderOptions.use_trajectory_builder_2d/3d`
+/// from the [`Mode`], and in 2D `trajectory_builder_2d_options.use_imu_data`
+/// from whether an IMU was declared on the [`SlamBuilder`](super::SlamBuilder).
+/// [`SlamConfig::advanced`] edits run last and may change anything.
 #[derive(Clone)]
 pub struct SlamConfig {
     mode: Mode,

@@ -152,10 +152,17 @@ impl OccupancyGrid {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Submap resolutions are `float` in Cartographer: print 0.05, not
+        // 0.05000000074505806.
+        let resolution_f32 = self.resolution as f32;
+        let resolution = if f64::from(resolution_f32) == self.resolution {
+            resolution_f32.to_string()
+        } else {
+            self.resolution.to_string()
+        };
         let yaml = format!(
-            "image: {image_name}\nresolution: {}\norigin: [{}, {}, 0.0]\nnegate: 0\n\
+            "image: {image_name}\nresolution: {resolution}\norigin: [{}, {}, 0.0]\nnegate: 0\n\
              occupied_thresh: {}\nfree_thresh: {}\n",
-            self.resolution,
             self.origin.x,
             self.origin.y,
             Self::ROS_OCCUPIED_THRESHOLD,

@@ -379,6 +379,10 @@ impl Slam {
     /// Ends the trajectory (flushing buffered sensor data) and runs the
     /// final optimization. Further `push_*` calls fail with
     /// [`SlamError::TrajectoryFinished`]. Calling it twice is a no-op.
+    ///
+    /// With pure localization ([`SlamBuilder::localize_in`]) Cartographer
+    /// then trims the whole localization trajectory: read its results
+    /// before (after [`optimize`](Self::optimize) if needed).
     pub fn finish(&mut self) -> Result<(), SlamError> {
         if self.finished {
             return Ok(());

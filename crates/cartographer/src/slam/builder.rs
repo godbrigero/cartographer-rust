@@ -10,8 +10,11 @@ use super::error::{SlamError, catch_check_failure};
 use super::instance::{Shared, Slam, SlamSensors};
 use super::time::Timestamp;
 use super::types::{Extrinsics, LocalResult, Mode, OptimizationEvent, SensorKind, to_isometry};
+use crate::io::proto_stream::ProtoStreamReader;
+use crate::io::proto_stream_deserializer::ProtoStreamDeserializer;
 use crate::mapping::map_builder::MapBuilder;
 use crate::mapping::map_builder_interface::MapBuilderInterface;
+use crate::mapping::proto::{SerializedData, serialized_data::Data};
 use crate::mapping::trajectory_builder_interface::{LocalSlamResultCallback, SensorId, SensorType};
 
 /// Default number of submaps kept by a pure localization trajectory.
@@ -157,7 +160,13 @@ impl SlamBuilder {
     /// loaded frozen (its poses never change) and the new trajectory keeps
     /// only its latest submaps (`pure_localization`, default 3 if not set
     /// in the config). The new trajectory is connected to the map by global
-    /// localization (see [`SlamConfig::global_localization`]).
+    /// localization (see [`SlamConfig::global_localization`]; the shipped
+    /// sampling ratio of 0.003 relocalizes slowly, 0.05-0.3 is typical for
+    /// localization).
+    ///
+    /// Poses are in the frame of the loaded map. Read results before
+    /// [`Slam::finish`]: like in Cartographer, the pure localization trimmer
+    /// removes the whole localization trajectory once it is finished.
     pub fn localize_in(mut self, pbstream: impl Into<PathBuf>) -> Self {
         self.load = Some((pbstream.into(), LoadMode::Localize));
         self
@@ -261,6 +270,7 @@ impl SlamBuilder {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, "path is not UTF-8"),
                 )
             })?;
+            check_map_mode(filename, mode)?;
             let loaded = catch_check_failure(|| map_builder.load_state_from_file(filename, true))
                 .map_err(SlamError::InvalidMap)?;
             log::info!("Loaded {} trajectories from '{filename}'.", loaded.len());
@@ -377,6 +387,35 @@ impl SlamBuilder {
             shared,
             (map_builder_options, trajectory_builder_options),
         ))
+    }
+}
+
+/// Reads the pbstream once to check that it holds submaps of `mode`: a
+/// mismatch would otherwise only fail later on a background thread (which
+/// aborts the process, like a failed `CHECK` in C++).
+fn check_map_mode(filename: &str, mode: Mode) -> Result<(), SlamError> {
+    let found = catch_check_failure(|| {
+        let mut reader = ProtoStreamReader::new(filename);
+        let mut deserializer = ProtoStreamDeserializer::new(&mut reader);
+        let mut data = SerializedData::default();
+        while deserializer.read_next_serialized_data(&mut data) {
+            if let Some(Data::Submap(submap)) = &data.data {
+                if submap.submap_2d.is_some() {
+                    return Some(Mode::TwoD);
+                }
+                if submap.submap_3d.is_some() {
+                    return Some(Mode::ThreeD);
+                }
+            }
+        }
+        None
+    })
+    .map_err(SlamError::InvalidMap)?;
+    match found {
+        Some(found) if found != mode => Err(SlamError::InvalidMap(format!(
+            "'{filename}' contains a {found} map, but this SLAM system is {mode}"
+        ))),
+        _ => Ok(()),
     }
 }
 

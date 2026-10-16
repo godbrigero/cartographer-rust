@@ -227,7 +227,7 @@ pub fn add_constraint_to_proto_graph(
     constraint: &proto::pose_graph::Constraint,
     pose_graph: &mut proto::PoseGraph,
 ) {
-    pose_graph.constraint.push(constraint.clone());
+    pose_graph.constraint.push(*constraint);
 }
 
 /// Adds `landmark` to `pose_graph` (C++ `AddToProtoGraph(const

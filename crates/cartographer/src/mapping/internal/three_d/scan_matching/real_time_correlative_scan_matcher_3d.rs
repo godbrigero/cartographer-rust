@@ -19,9 +19,7 @@ pub struct RealTimeCorrelativeScanMatcher3D {
 impl RealTimeCorrelativeScanMatcher3D {
     /// Creates the matcher.
     pub fn new(options: &proto::RealTimeCorrelativeScanMatcherOptions) -> Self {
-        Self {
-            options: options.clone(),
-        }
+        Self { options: *options }
     }
 
     /// Aligns `point_cloud` within the `hybrid_grid` given an

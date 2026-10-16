@@ -1,7 +1,8 @@
 //! Loads the shipped `configuration_files/*.lua` through
 //! `ConfigurationFileResolver` and checks representative values against the
-//! Lua sources (complements the C++ `configuration_files_test.cc`, whose
-//! `Create*Options` part belongs to the mapping port).
+//! Lua sources (complements the C++ `configuration_files_test.cc`, which is
+//! ported together with the `Create*Options` checks in
+//! `tests/configuration_files.rs`).
 
 use std::f64::consts::PI;
 use std::path::PathBuf;

@@ -72,37 +72,6 @@ pub struct SubmapSpec3D {
     pub global_pose: Rigid3d,
 }
 
-/// Euclidean parameterization of a 1-parameter block with the lower bound 0.
-///
-/// RUST PORT NOTE: C++ calls `problem.SetParameterLowerBound(&gravity, 0,
-/// 0.0)`. The `ceres` crate does not support parameter bounds; Ceres
-/// implements them by projecting `Plus(x, delta)` onto the bounds
-/// (`ParameterBlock::Plus`), which this parameterization reproduces. The
-/// additional projected line search Ceres runs on bounded problems
-/// (`TrustRegionMinimizer::DoLineSearch`) is not reproduced.
-#[derive(Clone, Copy, Debug, Default)]
-struct NonNegativeParameterization;
-
-impl LocalParameterization for NonNegativeParameterization {
-    fn plus(&self, x: &[f64], delta: &[f64], x_plus_delta: &mut [f64]) -> bool {
-        x_plus_delta[0] = (x[0] + delta[0]).max(0.);
-        true
-    }
-
-    fn compute_jacobian(&self, _x: &[f64], jacobian: &mut [f64]) -> bool {
-        jacobian[0] = 1.;
-        true
-    }
-
-    fn global_size(&self) -> usize {
-        1
-    }
-
-    fn local_size(&self) -> usize {
-        1
-    }
-}
-
 /// Selects a trajectory node closest in time to the landmark observation and
 /// applies a relative transform from it.
 fn get_initial_landmark_pose(
@@ -371,11 +340,7 @@ impl OptimizationProblem3D {
                         &result_center_to_center.delta_velocity,
                     );
                     let gravity_block = *gravity_constant.get_or_insert_with(|| {
-                        // Force gravity constant to be positive.
-                        problem.add_parameter_block_with_parameterization(
-                            &[trajectory_data.gravity_constant],
-                            Some(Box::new(NonNegativeParameterization)),
-                        )
+                        problem.add_parameter_block(&[trajectory_data.gravity_constant])
                     });
                     problem.add_residual_block(
                         AccelerationCostFunction3D::create_auto_diff_cost_function(
@@ -410,6 +375,8 @@ impl OptimizationProblem3D {
                 );
             }
             if let Some(gravity_block) = gravity_constant {
+                // Force gravity constant to be positive.
+                problem.set_parameter_lower_bound(gravity_block, 0, 0.0);
                 c_gravity_constants.insert(trajectory_id, gravity_block);
             }
         }

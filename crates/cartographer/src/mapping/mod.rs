@@ -35,6 +35,7 @@ pub use detect_floors::{Floor, Timespan, detect_floors};
 pub use id::{MapById, NodeId, SubmapId};
 pub use imu_tracker::ImuTracker;
 pub use internal::eigen_quaterniond_from_two_vectors::from_two_vectors;
+pub use internal::imu_based_pose_extrapolator::ImuBasedPoseExtrapolator;
 pub use internal::motion_filter::{MotionFilter, create_motion_filter_options};
 pub use internal::optimization::cost_functions::acceleration_cost_function_3d::AccelerationCostFunction3D;
 pub use internal::optimization::cost_functions::rotation_cost_function_3d::RotationCostFunction3D;
@@ -79,4 +80,3 @@ pub use two_d::probability_grid_range_data_inserter_2d::{
 pub use two_d::submap_2d::{ActiveSubmaps2D, Submap2D, create_submaps_options_2d};
 pub use two_d::xy_index::{Array2i, CellLimits, XYIndexRangeIterator};
 pub use value_conversion_tables::ValueConversionTables;
-pub use internal::imu_based_pose_extrapolator::ImuBasedPoseExtrapolator;

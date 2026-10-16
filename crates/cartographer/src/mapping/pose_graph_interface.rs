@@ -7,16 +7,21 @@
 //! `LandmarkNode::LandmarkObservation` -> [`LandmarkObservation`].
 //! [`SubmapData`] holds the submap as `Arc<RwLock<dyn Submap>>` (see
 //! `mapping::submaps`).
-
-// NOTE: trait PoseGraphInterface added by the pose graph port
+//!
+//! RUST PORT NOTE: the C++ abstract class becomes the object-safe trait
+//! [`PoseGraphInterface`]. All methods take `&self`: implementations are
+//! internally synchronized (C++ `absl::Mutex` members) and shared between
+//! threads, hence the `Send + Sync` supertraits.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
 use crate::common::time::Time;
-use crate::mapping::id::{NodeId, SubmapId};
+use crate::mapping::id::{MapById, NodeId, SubmapId};
+use crate::mapping::proto;
 use crate::mapping::submaps::Submap;
+use crate::mapping::trajectory_node::{TrajectoryNode, TrajectoryNodePose};
 use crate::transform::rigid_transform::Rigid3d;
 
 /// `PoseGraphInterface::Constraint::Pose`: the relative pose of a constraint
@@ -158,6 +163,73 @@ pub type GlobalSlamOptimizationCallback = Box<
         + Send
         + Sync,
 >;
+
+/// The read API of the pose graph (C++ `PoseGraphInterface`).
+pub trait PoseGraphInterface: Send + Sync {
+    /// Waits for all computations to finish and computes optimized poses.
+    fn run_final_optimization(&self);
+
+    /// Returns data for all submaps.
+    fn get_all_submap_data(&self) -> MapById<SubmapId, SubmapData>;
+
+    /// Returns the current optimized transform and submap itself for the
+    /// given `submap_id`. Returns `None` for the `submap` member if the submap
+    /// does not exist (anymore).
+    fn get_submap_data(&self, submap_id: &SubmapId) -> SubmapData;
+
+    /// Returns the global poses for all submaps.
+    fn get_all_submap_poses(&self) -> MapById<SubmapId, SubmapPose>;
+
+    /// Returns the transform converting data in the local map frame (i.e. the
+    /// continuous, non-loop-closed frame) into the global map frame (i.e. the
+    /// discontinuous, loop-closed frame).
+    fn get_local_to_global_transform(&self, trajectory_id: i32) -> Rigid3d;
+
+    /// Returns the current optimized trajectories.
+    fn get_trajectory_nodes(&self) -> MapById<NodeId, TrajectoryNode>;
+
+    /// Returns the current optimized trajectory poses.
+    fn get_trajectory_node_poses(&self) -> MapById<NodeId, TrajectoryNodePose>;
+
+    /// Returns the states of trajectories.
+    fn get_trajectory_states(&self) -> BTreeMap<i32, TrajectoryState>;
+
+    /// Returns the current optimized landmark poses.
+    fn get_landmark_poses(&self) -> BTreeMap<String, Rigid3d>;
+
+    /// Sets global pose of landmark `landmark_id` to given `global_pose`
+    /// (C++ default argument `frozen = false`).
+    fn set_landmark_pose(&self, landmark_id: &str, global_pose: &Rigid3d, frozen: bool);
+
+    /// Deletes a trajectory asynchronously.
+    fn delete_trajectory(&self, trajectory_id: i32);
+
+    /// Checks if the given trajectory is finished.
+    fn is_trajectory_finished(&self, trajectory_id: i32) -> bool;
+
+    /// Checks if the given trajectory is frozen.
+    fn is_trajectory_frozen(&self, trajectory_id: i32) -> bool;
+
+    /// Returns the trajectory data.
+    fn get_trajectory_data(&self) -> BTreeMap<i32, TrajectoryData>;
+
+    /// Returns the collection of constraints.
+    fn constraints(&self) -> Vec<Constraint>;
+
+    /// Serializes the constraints and trajectories. If
+    /// `include_unfinished_submaps` is set to `true`, unfinished submaps, i.e.
+    /// submaps that have not yet received all rangefinder data insertions,
+    /// will be included, otherwise not.
+    ///
+    /// RUST PORT NOTE: C++ implements this once in the `PoseGraph` base
+    /// class; implementations delegate to
+    /// [`crate::mapping::pose_graph::pose_graph_to_proto`].
+    fn to_proto(&self, include_unfinished_submaps: bool) -> proto::PoseGraph;
+
+    /// Sets the callback function that is invoked whenever the global
+    /// optimization problem is solved.
+    fn set_global_slam_optimization_callback(&self, callback: GlobalSlamOptimizationCallback);
+}
 
 #[cfg(test)]
 mod tests {

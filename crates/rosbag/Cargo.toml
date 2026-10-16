@@ -1,0 +1,24 @@
+[package]
+name = "cartographer-rosbag"
+description = "Small pure-Rust ROS1 bag (format 2.0) reader with decoders for common sensor messages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "cartographer_rosbag"
+
+[features]
+default = ["bz2"]
+# Pure-Rust bzip2 decompression for `bz2` chunks (no C code).
+bz2 = ["dep:bzip2-rs"]
+
+[dependencies]
+# Pure-Rust LZ4 (frame format, safe decoder; no C code).
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-decode", "safe-encode", "checked-decode"] }
+bzip2-rs = { version = "0.1.2", optional = true }
+
+[lints]
+workspace = true

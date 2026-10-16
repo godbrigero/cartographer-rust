@@ -1,0 +1,31 @@
+//! Port of `cartographer/io/`.
+
+pub mod color;
+pub mod coloring_points_processor;
+pub mod counting_points_processor;
+pub mod draw_trajectories;
+pub mod fake_file_writer;
+pub mod file_writer;
+pub mod fixed_ratio_sampling_points_processor;
+pub mod frame_id_filtering_points_processor;
+pub mod hybrid_grid_points_processor;
+pub mod image;
+pub mod intensity_to_color_points_processor;
+pub mod internal;
+pub mod min_max_range_filtering_points_processor;
+pub mod null_points_processor;
+pub mod outlier_removing_points_processor;
+pub mod pcd_writing_points_processor;
+pub mod ply_writing_points_processor;
+pub mod points_batch;
+pub mod points_processor;
+pub mod points_processor_pipeline_builder;
+pub mod probability_grid_points_processor;
+pub mod proto_stream;
+pub mod proto_stream_deserializer;
+pub mod proto_stream_interface;
+pub mod serialization_format_migration;
+pub mod submap_painter;
+pub mod vertical_range_filtering_points_processor;
+pub mod xray_points_processor;
+pub mod xyz_writing_points_processor;

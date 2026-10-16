@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/cartographer", "crates/ceres"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.88"
+repository = "https://github.com/cartographer-project/cartographer"
+
+[workspace.dependencies]
+nalgebra = "0.35"
+prost = "0.14"
+prost-build = "0.14"
+protox = "0.10"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+log = "0.4"
+approx = "0.5"
+proptest = "1"
+rand = "0.9"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "plotters"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[profile.test]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2

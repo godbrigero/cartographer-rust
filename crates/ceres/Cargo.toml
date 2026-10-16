@@ -1,0 +1,20 @@
+[package]
+name = "cartographer-ceres"
+description = "Focused pure-Rust port of the subset of Ceres Solver used by Cartographer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ceres"
+
+[dependencies]
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

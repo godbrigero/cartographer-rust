@@ -1,0 +1,26 @@
+[package]
+name = "cartographer"
+description = "Native Rust port of Google Cartographer (2D/3D SLAM)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ceres = { package = "cartographer-ceres", path = "../ceres" }
+nalgebra.workspace = true
+prost.workspace = true
+flate2.workspace = true
+log.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protox.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+rand.workspace = true
+
+[lints]
+workspace = true

@@ -1,5 +1,6 @@
 //! Port of `cartographer/io/`.
 
+pub mod cairo;
 pub mod color;
 pub mod coloring_points_processor;
 pub mod counting_points_processor;

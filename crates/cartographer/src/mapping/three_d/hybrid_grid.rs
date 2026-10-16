@@ -16,75 +16,9 @@ use nalgebra::Vector3;
 use crate::common::port::round_to_int;
 use crate::mapping::proto;
 
-use self::probability_values_shim::{UPDATE_MARKER, probability_to_value, value_to_probability};
-
-// TEMPORARY: replace with crate::mapping::probability_values after merge.
-//
-// Minimal, exact copy of the parts of `mapping/probability_values.{h,cc}`
-// needed by the hybrid grid (and its tests). `mapping/probability_values.rs`
-// is being ported in parallel; swap the `use` above (and in the tests) for
-// `crate::mapping::probability_values::*` and delete this module at merge.
-#[allow(dead_code)]
-mod probability_values_shim {
-    use crate::common::math::clamp;
-    use crate::common::port::round_to_int;
-
-    const VALUE_COUNT: i32 = 32768;
-
-    pub const MIN_PROBABILITY: f32 = 0.1;
-    pub const MAX_PROBABILITY: f32 = 1.0 - MIN_PROBABILITY;
-    pub const UNKNOWN_PROBABILITY_VALUE: u16 = 0;
-    pub const UPDATE_MARKER: u16 = 1 << 15;
-
-    pub fn odds(probability: f32) -> f32 {
-        probability / (1.0 - probability)
-    }
-
-    pub fn probability_from_odds(odds: f32) -> f32 {
-        odds / (odds + 1.0)
-    }
-
-    #[inline]
-    fn bounded_float_to_value(float_value: f32, lower_bound: f32, upper_bound: f32) -> u16 {
-        let value = round_to_int(
-            (clamp(float_value, lower_bound, upper_bound) - lower_bound)
-                * (32766.0f32 / (upper_bound - lower_bound)),
-        ) + 1;
-        debug_assert!(value >= 1);
-        debug_assert!(value <= 32767);
-        value as u16
-    }
-
-    #[inline]
-    pub fn probability_to_value(probability: f32) -> u16 {
-        bounded_float_to_value(probability, MIN_PROBABILITY, MAX_PROBABILITY)
-    }
-
-    /// Same as C++ `SlowValueToBoundedFloat` for the probability table; the
-    /// C++ table repeats twice, so the update marker bit is ignored.
-    #[inline]
-    pub fn value_to_probability(value: u16) -> f32 {
-        let value = value & (UPDATE_MARKER - 1);
-        if value == UNKNOWN_PROBABILITY_VALUE {
-            return MIN_PROBABILITY;
-        }
-        let scale = (MAX_PROBABILITY - MIN_PROBABILITY) / (VALUE_COUNT as f32 - 2.0);
-        f32::from(value) * scale + (MIN_PROBABILITY - scale)
-    }
-
-    pub fn compute_lookup_table_to_apply_odds(odds_value: f32) -> Vec<u16> {
-        let mut result = Vec::with_capacity(VALUE_COUNT as usize);
-        result.push(probability_to_value(probability_from_odds(odds_value)) + UPDATE_MARKER);
-        for cell in 1..VALUE_COUNT {
-            result.push(
-                probability_to_value(probability_from_odds(
-                    odds_value * odds(value_to_probability(cell as u16)),
-                )) + UPDATE_MARKER,
-            );
-        }
-        result
-    }
-}
+use crate::mapping::probability_values::{
+    UPDATE_MARKER, probability_to_value, value_to_probability,
+};
 
 /// `Eigen::Array3i`.
 pub type Array3i = Vector3<i32>;
@@ -1085,10 +1019,10 @@ impl<'a> IntoIterator for &'a IntensityHybridGrid {
 
 #[cfg(test)]
 mod tests {
-    use super::probability_values_shim::{
+    use super::*;
+    use crate::mapping::probability_values::{
         MAX_PROBABILITY, MIN_PROBABILITY, compute_lookup_table_to_apply_odds, odds,
     };
-    use super::*;
     use std::collections::BTreeMap;
 
     fn a(x: i32, y: i32, z: i32) -> Array3i {

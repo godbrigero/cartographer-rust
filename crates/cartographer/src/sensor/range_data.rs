@@ -132,10 +132,8 @@ mod tests {
     #[test]
     fn intensities_are_dropped() {
         let mut range_data = fixture();
-        range_data.returns = PointCloud::with_intensities(
-            range_data.returns.points().to_vec(),
-            vec![1., 2., 3.],
-        );
+        range_data.returns =
+            PointCloud::with_intensities(range_data.returns.points().to_vec(), vec![1., 2., 3.]);
         let decoded = from_proto(&to_proto(&range_data));
         assert!(decoded.returns.intensities().is_empty());
         assert_eq!(decoded.returns.points(), range_data.returns.points());
@@ -144,8 +142,10 @@ mod tests {
     #[test]
     fn transform_and_crop() {
         let range_data = fixture();
-        let transformed =
-            transform_range_data(&range_data, &Rigid3f::from_translation(Vector3::new(0., 0., 1.)));
+        let transformed = transform_range_data(
+            &range_data,
+            &Rigid3f::from_translation(Vector3::new(0., 0., 1.)),
+        );
         assert_eq!(transformed.origin, Vector3::new(1., 1., 2.));
         assert_eq!(transformed.returns[1].position, Vector3::new(4., 5., 7.));
         let cropped = crop_range_data(&range_data, 0., 6.);

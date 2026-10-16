@@ -103,6 +103,9 @@ mod tests {
             &Vector3::new(1000., 0., 0.),
             &Vector3::new(1000.5, 0., 0.)
         ));
-        assert!(!near(&Vector3::new(1., 0., 0.), &Vector3::new(1.01, 0., 0.)));
+        assert!(!near(
+            &Vector3::new(1., 0., 0.),
+            &Vector3::new(1.01, 0., 0.)
+        ));
     }
 }

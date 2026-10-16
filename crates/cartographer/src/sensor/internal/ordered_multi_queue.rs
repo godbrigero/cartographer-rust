@@ -13,7 +13,7 @@ const MAX_QUEUE_SIZE: usize = 500;
 
 /// Emulates glog's `LOG_EVERY_N`: true on the 1st, (n+1)th, ... call.
 pub(crate) fn log_every_n(counter: &AtomicU64, n: u64) -> bool {
-    counter.fetch_add(1, Ordering::Relaxed) % n == 0
+    counter.fetch_add(1, Ordering::Relaxed).is_multiple_of(n)
 }
 
 /// Key of a queue: `(trajectory_id, sensor_id)`, ordered lexicographically.
@@ -276,7 +276,10 @@ impl Drop for OrderedMultiQueue {
             return;
         }
         for (key, queue) in &self.queues {
-            assert!(queue.finished, "Check failed: queue '{key}' is not finished");
+            assert!(
+                queue.finished,
+                "Check failed: queue '{key}' is not finished"
+            );
         }
     }
 }

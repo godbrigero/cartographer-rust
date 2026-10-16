@@ -146,9 +146,9 @@ fn randomized_voxel_filter_indices<T>(
             .entry(get_voxel_cell_index(point_function(point), resolution))
             .or_insert((0, 0));
         voxel.0 += 1;
-        if voxel.0 == 1 {
-            voxel.1 = i;
-        } else if generator.uniform_int(1, voxel.0) == voxel.0 {
+        // The first point of a voxel is taken without a random draw; every
+        // further point replaces it with probability 1 / count.
+        if voxel.0 == 1 || generator.uniform_int(1, voxel.0) == voxel.0 {
             voxel.1 = i;
         }
     }
@@ -239,7 +239,10 @@ pub fn adaptive_voxel_filter(
     point_cloud: &PointCloud,
     options: &proto::AdaptiveVoxelFilterOptions,
 ) -> PointCloud {
-    adaptively_voxel_filtered(options, &filter_by_max_range(point_cloud, options.max_range))
+    adaptively_voxel_filtered(
+        options,
+        &filter_by_max_range(point_cloud, options.max_range),
+    )
 }
 
 #[cfg(test)]

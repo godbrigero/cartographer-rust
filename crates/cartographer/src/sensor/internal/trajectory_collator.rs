@@ -12,8 +12,7 @@ use crate::sensor::internal::ordered_multi_queue::{OrderedMultiQueue, QueueKey};
 
 // RUST PORT NOTE: the C++ static member `collator_metrics_family_` (initialised
 // to `Family<Counter>::Null()`); `None` means the null family.
-static COLLATOR_METRICS_FAMILY: Mutex<Option<&'static dyn Family<dyn Counter>>> =
-    Mutex::new(None);
+static COLLATOR_METRICS_FAMILY: Mutex<Option<&'static dyn Family<dyn Counter>>> = Mutex::new(None);
 
 fn collator_metrics_family() -> &'static dyn Family<dyn Counter> {
     COLLATOR_METRICS_FAMILY

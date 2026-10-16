@@ -214,8 +214,8 @@ mod tests {
                 recording_callback(&received, trajectory_id[1]),
             );
 
-            for i in 0..4 {
-                input_data[i].move_to_collator(&mut collator);
+            for input in input_data.iter_mut().take(4) {
+                input.move_to_collator(&mut collator);
             }
 
             input_data[4].move_to_collator(&mut collator);

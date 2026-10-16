@@ -70,11 +70,7 @@ pub trait TrajectoryBuilderInterface {
     /// C++ `AddSensorData(sensor_id, const sensor::OdometryData&)`.
     fn add_odometry_data(&mut self, sensor_id: &str, odometry_data: &OdometryData);
     /// C++ `AddSensorData(sensor_id, const sensor::FixedFramePoseData&)`.
-    fn add_fixed_frame_pose_data(
-        &mut self,
-        sensor_id: &str,
-        fixed_frame_pose: &FixedFramePoseData,
-    );
+    fn add_fixed_frame_pose_data(&mut self, sensor_id: &str, fixed_frame_pose: &FixedFramePoseData);
     /// C++ `AddSensorData(sensor_id, const sensor::LandmarkData&)`.
     fn add_landmark_data(&mut self, sensor_id: &str, landmark_data: &LandmarkData);
 }

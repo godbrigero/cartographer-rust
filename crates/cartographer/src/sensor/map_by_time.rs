@@ -155,7 +155,11 @@ impl<D: HasTime> MapByTime<D> {
     /// (`BeginOfTrajectory` .. C++ `lower_bound(trajectory_id, time)`);
     /// `.next_back()` is C++ `std::prev(lower_bound(..))`. Panics if the
     /// trajectory does not exist.
-    pub fn before(&self, trajectory_id: i32, time: Time) -> impl DoubleEndedIterator<Item = &D> + '_ {
+    pub fn before(
+        &self,
+        trajectory_id: i32,
+        time: Time,
+    ) -> impl DoubleEndedIterator<Item = &D> + '_ {
         self.trajectory_map(trajectory_id)
             .range(..time)
             .map(|(_, data)| data)
@@ -223,7 +227,10 @@ mod tests {
     }
 
     fn times(map_by_time: &MapByTime<Data>, trajectory_id: i32) -> Vec<Time> {
-        map_by_time.trajectory(trajectory_id).map(|d| d.time).collect()
+        map_by_time
+            .trajectory(trajectory_id)
+            .map(|d| d.time)
+            .collect()
     }
 
     mod map_by_time_test {
@@ -232,9 +239,24 @@ mod tests {
         #[test]
         fn append_and_view_trajectory() {
             let mut map_by_time = MapByTime::new();
-            map_by_time.append(0, Data { time: create_time(10) });
-            map_by_time.append(42, Data { time: create_time(42) });
-            map_by_time.append(42, Data { time: create_time(43) });
+            map_by_time.append(
+                0,
+                Data {
+                    time: create_time(10),
+                },
+            );
+            map_by_time.append(
+                42,
+                Data {
+                    time: create_time(42),
+                },
+            );
+            map_by_time.append(
+                42,
+                Data {
+                    time: create_time(43),
+                },
+            );
             assert_eq!(times(&map_by_time, 42), [create_time(42), create_time(43)]);
         }
 
@@ -243,7 +265,12 @@ mod tests {
             let mut map_by_time = MapByTime::new();
             assert!(!map_by_time.has_trajectory(42));
             for ms in [1, 41, 42, 43, 47, 48, 49, 5000] {
-                map_by_time.append(42, Data { time: create_time(ms) });
+                map_by_time.append(
+                    42,
+                    Data {
+                        time: create_time(ms),
+                    },
+                );
             }
             assert!(map_by_time.has_trajectory(42));
             // Trim one node.
@@ -282,14 +309,28 @@ mod tests {
     fn lower_bound_and_before() {
         let mut map_by_time = MapByTime::new();
         for ms in [10, 20, 30] {
-            map_by_time.append(1, Data { time: create_time(ms) });
+            map_by_time.append(
+                1,
+                Data {
+                    time: create_time(ms),
+                },
+            );
         }
-        map_by_time.append(3, Data { time: create_time(1) });
+        map_by_time.append(
+            3,
+            Data {
+                time: create_time(1),
+            },
+        );
         assert_eq!(map_by_time.trajectory_ids().collect::<Vec<_>>(), [1, 3]);
         let mut it = map_by_time.lower_bound(1, create_time(15));
         assert_eq!(it.next().unwrap().time, create_time(20));
         assert_eq!(
-            map_by_time.before(1, create_time(20)).next_back().unwrap().time,
+            map_by_time
+                .before(1, create_time(20))
+                .next_back()
+                .unwrap()
+                .time,
             create_time(10)
         );
         assert_eq!(map_by_time.lower_bound(1, create_time(31)).count(), 0);
@@ -299,7 +340,17 @@ mod tests {
     #[should_panic]
     fn append_requires_increasing_time() {
         let mut map_by_time = MapByTime::new();
-        map_by_time.append(0, Data { time: create_time(10) });
-        map_by_time.append(0, Data { time: create_time(10) });
+        map_by_time.append(
+            0,
+            Data {
+                time: create_time(10),
+            },
+        );
+        map_by_time.append(
+            0,
+            Data {
+                time: create_time(10),
+            },
+        );
     }
 }

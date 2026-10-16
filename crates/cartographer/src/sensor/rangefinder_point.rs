@@ -155,7 +155,8 @@ mod tests {
             position: Vector3::new(1., 1., 1.),
             time: -0.5,
         };
-        let result = &transform * &point;
+        let result = transform * point;
+        assert_eq!(Mul::mul(&transform, &point), result);
         assert_eq!(result.position, Vector3::new(2., 3., 4.));
         assert_eq!(result.time, -0.5);
     }

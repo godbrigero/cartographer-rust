@@ -79,3 +79,4 @@ pub use two_d::probability_grid_range_data_inserter_2d::{
 pub use two_d::submap_2d::{ActiveSubmaps2D, Submap2D, create_submaps_options_2d};
 pub use two_d::xy_index::{Array2i, CellLimits, XYIndexRangeIterator};
 pub use value_conversion_tables::ValueConversionTables;
+pub use internal::imu_based_pose_extrapolator::ImuBasedPoseExtrapolator;

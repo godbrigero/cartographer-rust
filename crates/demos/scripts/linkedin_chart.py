@@ -54,12 +54,57 @@ def map_render(record, width, height):
     return pil.filter(ImageFilter.GaussianBlur(0.6)).resize((width, height), Image.LANCZOS)
 
 
+def stat_list(final):
+    ate_cm = final["ate_rmse_optimized_m"] * 100
+    return [
+        ("338 / 338", "of the original C++ tests\nported and passing"),
+        (f"{ate_cm:.1f} cm", "average position error\nafter a 99 m walk"),
+        ("2.4 s", "to map 90 s of sensor data\n(Apple M3 Max laptop)"),
+        ("0", "C/C++ dependencies:\njust `cargo build`"),
+    ]
+
+
+def landscape(record, final, out):
+    """1920x1080 (16:9): matches the videos, for use as a video thumbnail."""
+    w, h = 1920, 1080
+    img = Image.new("RGB", (w, h), BG)
+    map_w = 1180
+    hero = map_render(record, map_w, h)
+    # Fade the map into the background on its left edge.
+    fade = Image.new("L", (map_w, h), 255)
+    fd = ImageDraw.Draw(fade)
+    for i in range(220):
+        fd.line([(i, 0), (i, h)], fill=int(255 * (i / 220) ** 1.5))
+    img.paste(Image.composite(hero, Image.new("RGB", (map_w, h), BG), fade), (w - map_w, 0))
+    d = ImageDraw.Draw(img)
+    x0 = 96
+    d.text((x0, 120), "Google Cartographer,", font=font(76, True), fill=INK)
+    d.text((x0, 206), "rewritten in pure Rust", font=font(76, True), fill=ACCENT)
+    d.text((x0, 310), "LiDAR + IMU SLAM  ·  simulated Unitree L1", font=font(30), fill=INK_2)
+    cw, ch, gap, top = 400, 196, 24, 450
+    for i, (big, small) in enumerate(stat_list(final)):
+        cx = x0 + (i % 2) * (cw + gap)
+        cy = top + (i // 2) * (ch + gap)
+        d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=20, fill=CARD)
+        d.text((cx + 30, cy + 26), big, font=font(62, True), fill=INK)
+        d.multiline_text((cx + 30, cy + 112), small, font=font(24), fill=INK_2, spacing=7)
+    d.text((x0, h - 64), "Simulated sensors with exact ground truth  ·  same algorithms & defaults as upstream",
+           font=font(21), fill=(95, 102, 116))
+    img.save(out)
+    print("wrote", out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("record", help="slam_run.jsonl written by unitree_l1_bag --record")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--landscape", action="store_true",
+                    help="1920x1080 (16:9) layout, e.g. as a LinkedIn video thumbnail")
     args = ap.parse_args()
     final = [json.loads(l) for l in open(args.record) if '"type":"final"' in l][0]
+    if args.landscape:
+        landscape(args.record, final, args.out)
+        return
 
     img = Image.new("RGB", (W, H), BG)
     hero_h = 610
@@ -81,13 +126,7 @@ def main():
     d.text((x0, 214), "LiDAR + IMU SLAM: a 3D map built from a simulated Unitree L1 scan",
            font=font(23), fill=INK_2)
 
-    ate_cm = final["ate_rmse_optimized_m"] * 100
-    stats = [
-        ("338 / 338", "of the original C++ tests\nported and passing"),
-        (f"{ate_cm:.1f} cm", "average position error\nafter a 99 m walk"),
-        ("2.4 s", "to map 90 s of sensor data\n(Apple M3 Max laptop)"),
-        ("0", "C/C++ dependencies:\njust `cargo build`"),
-    ]
+    stats = stat_list(final)
     cw, ch, gap = 462, 170, 28
     top = 880
     for i, (big, small) in enumerate(stats):

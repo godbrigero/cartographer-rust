@@ -40,3 +40,4 @@ desktop.ini
 
 # --- Local agent worktrees ----------------------------------------------
 /.claude/
+.VSCodeCounter/

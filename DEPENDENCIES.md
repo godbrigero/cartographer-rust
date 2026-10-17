@@ -13,7 +13,7 @@ Versions were checked on crates.io on 2026-10-16.
 |---|---|---|---|
 | Eigen 3 | vectors, matrices, quaternions, transforms | [`nalgebra`] 0.35 | The most widely used pure-Rust linear algebra crate, actively maintained. It has fixed-size `Vector3`/`Matrix3`/`UnitQuaternion` matching Eigen's fixed-size types, and its generic `RealField` scalar lets the same code run on `f32`, `f64` and Ceres-style `Jet`s (like Eigen templates do). |
 | Ceres Solver | nonlinear least squares: Ceres scan matchers (2D/3D), pose graph SPA, landmarks, IMU terms; `jet.h`, `rotation.h`, `cubic_interpolation.h` | **`cartographer-ceres`** (in this workspace: a focused port of Ceres 2.0.0's own source) | We evaluated `tiny-solver` 0.18, `factrs` 0.3, `argmin` and `levenberg-marquardt`. None reproduces Ceres semantics closely enough for a faithful port: local parameterizations with constant blocks, `DYNAMIC` autodiff residual counts, Ceres' LM trust-region strategy and step evaluator (including non-monotonic steps), the loss-function corrector, and `BiCubicInterpolator` over Jets. They also use dynamically sized duals (`num-dual` `DualDVec`), which allocate in the scan-matching hot path. The port is about the size of the subset Cartographer actually calls. See `crates/ceres/DESIGN.md`. |
-| Ceres sparse backend (SuiteSparse/CHOLMOD or Eigen sparse) | `SPARSE_NORMAL_CHOLESKY` for the pose graph | see `crates/ceres/DESIGN.md` | Chosen by the solver port (pure Rust). |
+| Ceres sparse backend (SuiteSparse/CHOLMOD or Eigen sparse) | `SPARSE_NORMAL_CHOLESKY` for the pose graph | [`faer`] 0.24 (`sparse-linalg`, no rayon) | Pure-Rust, actively maintained; supernodal sparse Cholesky with AMD fill-reducing ordering and reusable symbolic analysis. A 16,000-pose 2D SPA problem solves 5 LM iterations in ~0.13 s. Rationale in `crates/ceres/DESIGN.md`. |
 | Protocol Buffers (libprotobuf + `protoc`) | option protos, `.pbstream` serialization | [`prost`] 0.14 + [`prost-build`] 0.14 + [`protox`] 0.10 | `prost` is the standard pure-Rust protobuf runtime and is wire-compatible with libprotobuf. `protox` is a pure-Rust `.proto` compiler, so the build needs no `protoc` binary. The `.proto` files are byte-identical copies of the C++ ones; a test enforces this. |
 | Lua 5.2 (C library) | `.lua` configuration files, `LuaParameterDictionary` | **dedicated pure-Rust Lua 5.2 subset interpreter** (`cartographer::common::lua`) | `mlua` with the `vendored` feature compiles C Lua, which the policy rules out. `piccolo` 0.3 (pure Rust) is experimental, and its stackless, GC-arena API makes the dictionary semantics awkward to build on. Configs only need a small, well-defined subset of Lua: tables, locals, `include`, arithmetic, `math.*`, simple control flow and functions. A dedicated interpreter lets us match Lua 5.2 number formatting and the C++ reference-counting semantics exactly. |
 | glog | logging, `CHECK` | [`log`] 0.4 + `assert!`/`panic!` | `log` is the standard logging facade. Binaries and examples install a simple logger. |
@@ -92,6 +92,27 @@ same pixels, and we write the same `bKGD` chunk as Cairo.
 | tokio-stream | 0.1 | runtime, `cartographer-cloud` only | yes |
 | prometheus-client | 0.25 | runtime, `cartographer-cloud` feature `prometheus` (default) | yes |
 | tonic-prost-build | 0.14 | build, `cartographer-cloud` only | yes (fed by protox; never invokes `protoc`) |
+| faer (`std`, `sparse-linalg`) | 0.24 | runtime, `cartographer-ceres` | yes |
+| simba / num-traits | 0.10 / 0.2 | runtime, `cartographer-ceres` (implementing nalgebra's `RealField` for `Jet`) | yes |
+| libm | 0.2 | runtime, `cartographer-ceres` (`erf`, Bessel functions of `jet.h`) | yes |
+| clap | 4 | runtime (binaries) | yes |
+| cpu-time | 1 | runtime (`common::time::get_thread_cpu_time_seconds`, avoids our own `unsafe` FFI) | yes (OS API bindings only) |
+| num-traits | 0.2 | runtime | yes |
+| criterion | 0.8 | dev (benches) | yes |
+| rand_chacha / rand_distr | 0.9 / 0.5 | `cartographer-sim` | yes |
+| lz4_flex | 0.14 | `cartographer-rosbag` (lz4 bag chunks) | yes (`safe-decode`) |
+| bzip2-rs | 0.1 | `cartographer-rosbag`, feature `bz2` | yes (the `rosbag` crate on crates.io was rejected: it always builds `bzip2-sys`/`lz4-sys` C code) |
+
+## `unsafe` policy
+
+The workspace denies `unsafe_code`. The single exception is in
+`crates/ceres/src/jet.rs`: nalgebra's `RealField` requires simba's
+`SimdValue` trait, which *declares* two `unsafe fn` methods
+(`extract_unchecked`, `replace_unchecked`). Implementing them for `Jet`
+needs a narrow `#[allow(unsafe_code)]`; their bodies contain no unsafe
+operations.
+
+[`faer`]: https://crates.io/crates/faer
 
 [`tonic`]: https://crates.io/crates/tonic
 [`tonic-prost`]: https://crates.io/crates/tonic-prost

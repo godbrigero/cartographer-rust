@@ -22,7 +22,7 @@ W, H = 1080, 1350
 BG = (10, 12, 18)
 INK = (240, 243, 248)
 INK_2 = (150, 158, 172)
-ACCENT = (64, 182, 255)
+ACCENT = (232, 116, 59)  # rust orange, matching the warm wall tops of the map
 CARD = (22, 27, 38)
 
 

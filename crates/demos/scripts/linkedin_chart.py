@@ -78,18 +78,14 @@ def landscape(record, final, out):
     img.paste(Image.composite(hero, Image.new("RGB", (map_w, h), BG), fade), (w - map_w, 0))
     d = ImageDraw.Draw(img)
     x0 = 96
-    d.text((x0, 120), "Google Cartographer,", font=font(76, True), fill=INK)
-    d.text((x0, 206), "rewritten in pure Rust", font=font(76, True), fill=ACCENT)
-    d.text((x0, 310), "LiDAR + IMU SLAM  ·  simulated Unitree L1", font=font(30), fill=INK_2)
-    cw, ch, gap, top = 400, 196, 24, 450
+    d.text((x0, 190), "Google Cartographer,", font=font(76, True), fill=INK)
+    d.text((x0, 276), "rewritten in pure Rust", font=font(76, True), fill=ACCENT)
+    cw, ch, top = 420, 210, 480
     for i, (big, small) in enumerate(stat_list(final)):
-        cx = x0 + (i % 2) * (cw + gap)
-        cy = top + (i // 2) * (ch + gap)
-        d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=20, fill=CARD)
-        d.text((cx + 30, cy + 26), big, font=font(62, True), fill=INK)
-        d.multiline_text((cx + 30, cy + 112), small, font=font(24), fill=INK_2, spacing=7)
-    d.text((x0, h - 64), "Simulated sensors with exact ground truth  ·  same algorithms & defaults as upstream",
-           font=font(21), fill=(95, 102, 116))
+        cx = x0 + (i % 2) * cw
+        cy = top + (i // 2) * ch
+        d.text((cx, cy), big, font=font(66, True), fill=INK)
+        d.multiline_text((cx, cy + 88), small, font=font(25), fill=INK_2, spacing=7)
     img.save(out)
     print("wrote", out)
 

@@ -3,11 +3,12 @@
 //! built.
 //!
 //! ```text
-//! cargo run --release -p cartographer-slam --example live_slam -- [2d|3d] [SPEEDUP]
+//! cargo run --release -p cartographer-slam --example live_slam -- [2d|3d] [SPEEDUP|max]
 //! ```
 //!
 //! A "driver" thread plays a simulated robot in real time, sped up `SPEEDUP`
-//! times (default 10), and sends each message over a channel, like a sensor
+//! times (default 10; `max` sends the data as fast as SLAM consumes it), and
+//! sends each message over a channel, like a sensor
 //! driver callback would: a 2D LiDAR, IMU and wheel odometry in 2D (default),
 //! a 16-beam rotating LiDAR and IMU carried by a walking person in 3D
 //! (simulated by `cartographer-sim`). The main thread pushes every message
@@ -37,9 +38,15 @@ fn main() -> Result<(), SlamError> {
         Some("3d") => Mode::ThreeD,
         Some(other) => panic!("unknown mode '{other}': use 2d or 3d"),
     };
-    let speedup: f64 = args
-        .next()
-        .map_or(10.0, |s| s.parse().expect("SPEEDUP: a number"));
+    // `max` replays without pacing; otherwise a speedup factor > 0.
+    let speedup: f64 = match args.next().as_deref() {
+        None => 10.0,
+        Some("max") => f64::INFINITY,
+        Some(s) => match s.parse::<f64>() {
+            Ok(speedup) if speedup > 0.0 => speedup,
+            _ => panic!("SPEEDUP must be a number > 0 or `max`, got '{s}'"),
+        },
+    };
 
     let (dataset, mut slam) = match mode {
         Mode::TwoD => setup_2d()?,

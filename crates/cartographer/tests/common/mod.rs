@@ -435,6 +435,10 @@ pub struct TrajectoryMetrics {
     pub end_drift: f64,
     /// `reference_from_estimate`.
     pub alignment: Isometry3<f64>,
+    /// Per pose `[time, ATE translation (m), ATE rotation (rad), RPE
+    /// translation over 1 m (m), RPE rotation over 1 m (rad)]` (RPE `NaN`
+    /// within the last metre), for the report plots.
+    pub errors: Vec<[f64; 5]>,
 }
 
 /// Computes ATE (after `alignment`, or after the given fixed
@@ -463,6 +467,15 @@ pub fn trajectory_metrics(pairs: &[PosePair], alignment: AlignWith) -> Trajector
     let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
     let max = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
     let relative = rpe(pairs, RpeDelta::Distance(1.0));
+    let relative_series = rpe_series(pairs, 1.0);
+    let errors = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, pair)| {
+            let [t, r] = relative_series[i];
+            [pair.time, translation[i], rotation[i], t, r]
+        })
+        .collect();
     let (first, last) = (&pairs[0], &pairs[pairs.len() - 1]);
     let estimated = first.estimate.inverse() * last.estimate;
     let truth = first.reference.inverse() * last.reference;
@@ -485,7 +498,46 @@ pub fn trajectory_metrics(pairs: &[PosePair], alignment: AlignWith) -> Trajector
         rpe_rotation_max: relative.rotation.max,
         end_drift: (estimated.translation.vector - truth.translation.vector).norm(),
         alignment: transform.isometry,
+        errors,
     }
+}
+
+/// Per pair `[translation, rotation]` relative pose error to the first pair
+/// at least `distance` metres of ground-truth travel later (the samples of
+/// `cartographer_sim::metrics::rpe` with `RpeDelta::Distance`), `NaN` where
+/// there is no such pair.
+fn rpe_series(pairs: &[PosePair], distance: f64) -> Vec<[f64; 2]> {
+    let mut travelled = Vec::with_capacity(pairs.len());
+    let mut sum = 0.0;
+    for (k, pair) in pairs.iter().enumerate() {
+        if k > 0 {
+            sum += (pair.reference.translation.vector - pairs[k - 1].reference.translation.vector)
+                .norm();
+        }
+        travelled.push(sum);
+    }
+    let mut j = 0;
+    (0..pairs.len())
+        .map(|i| {
+            j = j.max(i + 1);
+            while j < pairs.len() && travelled[j] - travelled[i] < distance - 1e-9 {
+                j += 1;
+            }
+            if j >= pairs.len() {
+                return [f64::NAN; 2];
+            }
+            let (a, b) = (&pairs[i], &pairs[j]);
+            let error = (a.reference.inverse() * b.reference).inverse()
+                * (a.estimate.inverse() * b.estimate);
+            [error.translation.vector.norm(), error.rotation.angle()]
+        })
+        .collect()
+}
+
+/// Rounds to `decimals` decimal places (keeps the JSON reports small).
+pub fn rounded(x: f64, decimals: i32) -> Json {
+    let scale = 10_f64.powi(decimals);
+    Json::from((x * scale).round() / scale)
 }
 
 /// How estimates are brought into the ground-truth frame.
@@ -526,8 +578,92 @@ impl TrajectoryMetrics {
             ),
             ("end_drift_m", self.end_drift.into()),
             ("alignment", isometry_json(&self.alignment)),
+            (
+                // [t, ate_m, ate_rad, rpe_1m_m, rpe_1m_rad], at most ~500 rows.
+                "errors_over_time",
+                Json::Array(
+                    self.errors
+                        .iter()
+                        .step_by(self.errors.len().div_ceil(500).max(1))
+                        .map(|row| {
+                            Json::Array(vec![
+                                rounded(row[0], 3),
+                                rounded(row[1], 5),
+                                rounded(row[2], 6),
+                                rounded(row[3], 5),
+                                rounded(row[4], 6),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ])
     }
+}
+
+/// Optimized global node and submap positions in the ground-truth frame
+/// (`world_from_map` applied), for drawing the pose graph:
+/// `{"nodes": [[trajectory, index, x, y, z], ...], "submaps": [...]}`.
+pub fn pose_graph_json(
+    pose_graph: &dyn PoseGraphInterface,
+    world_from_map: &Isometry3<f64>,
+) -> Json {
+    let row = |trajectory: i32, index: i32, pose: &Rigid3d| {
+        let p = world_from_map * Point3::from(to_isometry(pose).translation.vector);
+        Json::Array(vec![
+            i64::from(trajectory).into(),
+            i64::from(index).into(),
+            rounded(p.x, 3),
+            rounded(p.y, 3),
+            rounded(p.z, 3),
+        ])
+    };
+    Json::object([
+        (
+            "nodes",
+            Json::Array(
+                pose_graph
+                    .get_trajectory_nodes()
+                    .iter()
+                    .map(|node| {
+                        row(
+                            node.id.trajectory_id,
+                            node.id.node_index,
+                            &node.data.global_pose,
+                        )
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "submaps",
+            Json::Array(
+                pose_graph
+                    .get_all_submap_data()
+                    .iter()
+                    .map(|submap| {
+                        row(
+                            submap.id.trajectory_id,
+                            submap.id.submap_index,
+                            &submap.data.pose,
+                        )
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+/// At most `max_points` of `points` (uniform stride), `[[x, y, z], ...]`
+/// rounded to centimetres.
+pub fn points_json(points: &[Point3<f64>], max_points: usize) -> Json {
+    Json::Array(
+        points
+            .iter()
+            .step_by(points.len().div_ceil(max_points.max(1)).max(1))
+            .map(|p| Json::Array(vec![rounded(p.x, 2), rounded(p.y, 2), rounded(p.z, 2)]))
+            .collect(),
+    )
 }
 
 // ------------------------------------------------------------- constraints
@@ -546,8 +682,10 @@ pub struct ConstraintSummary {
     pub inter_trajectory: usize,
     /// Inter-submap constraints per `(node trajectory, submap trajectory)`.
     pub inter_by_trajectory_pair: BTreeMap<(i32, i32), usize>,
-    /// `(submap, node)` of every inter-submap constraint.
-    pub inter_list: Vec<(SubmapId, NodeId)>,
+    /// `(submap, node, kind)` of every inter-submap constraint; kind 0:
+    /// local (same trajectory, recent submap), 1: loop closure, 2:
+    /// inter-trajectory.
+    pub inter_list: Vec<(SubmapId, NodeId, u8)>,
 }
 
 pub fn constraint_summary(pose_graph: &dyn PoseGraphInterface) -> ConstraintSummary {
@@ -573,15 +711,19 @@ pub fn constraint_summary(pose_graph: &dyn PoseGraphInterface) -> ConstraintSumm
                     .inter_by_trajectory_pair
                     .entry((node.trajectory_id, submap.trajectory_id))
                     .or_default() += 1;
-                summary.inter_list.push((submap, node));
-                if node.trajectory_id != submap.trajectory_id {
+                let kind = if node.trajectory_id != submap.trajectory_id {
                     summary.inter_trajectory += 1;
+                    2
                 } else if first_insertion_submap
                     .get(&node)
                     .is_some_and(|&first| submap.submap_index + 1 < first)
                 {
                     summary.loop_closure += 1;
-                }
+                    1
+                } else {
+                    0
+                };
+                summary.inter_list.push((submap, node, kind));
             }
         }
     }
@@ -612,17 +754,19 @@ impl ConstraintSummary {
                 ),
             ),
             (
-                // [submap_trajectory, submap_index, node_trajectory, node_index]
+                // [submap_trajectory, submap_index, node_trajectory, node_index,
+                //  kind (0 local, 1 loop closure, 2 inter-trajectory)]
                 "inter_submap_constraints",
                 Json::Array(
                     self.inter_list
                         .iter()
-                        .map(|(submap, node)| {
+                        .map(|(submap, node, kind)| {
                             Json::Array(vec![
                                 (submap.trajectory_id as i64).into(),
                                 (submap.submap_index as i64).into(),
                                 (node.trajectory_id as i64).into(),
                                 (node.node_index as i64).into(),
+                                i64::from(*kind).into(),
                             ])
                         })
                         .collect(),

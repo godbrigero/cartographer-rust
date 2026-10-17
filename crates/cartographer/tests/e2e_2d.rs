@@ -45,8 +45,8 @@ use cartographer_sim::{
 use common::{
     AlignWith, ConstraintSummary, Json, Report, RunOptions, TrajectoryMetrics,
     compose_global_grid_2d, constraint_summary, global_node_poses, isometry_json, load_options,
-    num_submaps, observable_ground_truth, pairs_with_ground_truth, planar, poses_json,
-    run_trajectory, trajectory_metrics, transform_poses, write_map_png,
+    num_submaps, observable_ground_truth, pairs_with_ground_truth, planar, pose_graph_json,
+    poses_json, run_trajectory, trajectory_metrics, transform_poses, write_map_png,
 };
 use nalgebra::{Isometry3, Point2, Translation3, UnitQuaternion, Vector2, Vector3};
 
@@ -342,6 +342,10 @@ fn single_trajectory(
     report.section("trajectory", metrics.to_json());
     report.section("local_slam_trajectory", local.to_json());
     report.section("constraints", constraints.to_json());
+    report.section(
+        "pose_graph",
+        pose_graph_json(pose_graph.as_ref(), &metrics.alignment),
+    );
     report.section(
         "estimated_poses_gt_frame",
         poses_json(&transform_poses(&metrics.alignment, &global), 5),
@@ -660,6 +664,7 @@ fn multi_trajectory_2d() {
     report.info("loop_closure_constraints", constraints.loop_closure as f64);
     report.section("constraints", constraints.to_json());
     report.section("joint_alignment", isometry_json(&joint));
+    report.section("pose_graph", pose_graph_json(pose_graph.as_ref(), &joint));
     report.section(
         "estimated_poses_gt_frame",
         Json::Array(vec![

@@ -34,6 +34,18 @@ fn main() -> Result<(), SlamError> {
 }
 ```
 
+For live use, push data as your drivers deliver it and read results at any
+time while the map is being built. Local SLAM runs inside each `push_*` call,
+and loop closure runs on background threads:
+
+```rust,ignore
+slam.push_lidar("scan", t, &points)?;
+if let Some(pose) = slam.current_pose() { /* latest loop-closure-corrected pose */ }
+let grid = slam.map_2d()?; // or slam.map_3d()? in Mode::ThreeD
+```
+
+See the `live_slam` example (`cargo run --release --example live_slam -- 2d|3d`).
+
 Cartographer's stock Lua configuration files ship in `configuration_files/`
 and are also compiled into the library, so `SlamConfig::from_lua` works
 without any files on disk.

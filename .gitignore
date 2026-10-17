@@ -38,6 +38,7 @@ desktop.ini
 .fleet/
 *.code-workspace
 
-# --- Local agent worktrees ----------------------------------------------
-/.claude/
+# --- Local Claude Code state (worktrees etc.); project skills are tracked --
+/.claude/*
+!/.claude/skills/
 .VSCodeCounter/

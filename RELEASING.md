@@ -1,5 +1,7 @@
 # Releasing to crates.io
 
+**Published:** 0.1.0 of all four crates (2026-10-16).
+
 Publishing is irreversible (versions can only be yanked, never deleted)
 and is done by the maintainer, not by automation.
 

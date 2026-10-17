@@ -68,6 +68,21 @@ Cross-checked with `cargo check` for `aarch64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` and
 `x86_64-pc-windows-gnu`.
 
+## Install
+
+[![crates.io](https://img.shields.io/crates/v/cartographer-slam.svg)](https://crates.io/crates/cartographer-slam)
+[![docs.rs](https://docs.rs/cartographer-slam/badge.svg)](https://docs.rs/cartographer-slam)
+
+```sh
+cargo add cartographer-slam
+```
+
+The package is `cartographer-slam` (the name `cartographer` is taken on
+crates.io), but the library is still imported as `use cartographer::...`.
+Also published: [`cartographer-ceres`](https://crates.io/crates/cartographer-ceres),
+[`cartographer-cloud`](https://crates.io/crates/cartographer-cloud) and
+[`cartographer-sim`](https://crates.io/crates/cartographer-sim).
+
 ## Quick start: the high-level API
 
 ```rust

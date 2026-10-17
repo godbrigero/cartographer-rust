@@ -1,5 +1,7 @@
 # cartographer-rust
 
+![Google Cartographer, rewritten in pure Rust](docs/media/cartographer_rust.jpg)
+
 A native, pure-Rust port of [Google Cartographer](https://github.com/cartographer-project/cartographer):
 2D and 3D LiDAR + IMU + odometry + landmark SLAM with submaps, real-time
 correlative / Ceres / branch-and-bound scan matching, and a sparse pose graph
@@ -17,7 +19,23 @@ with loop closure.
 * **Easy to use.** A small high-level API (`cartographer::Slam`) sits on top
   of the faithful layer for people who just want a map.
 
-![Cartographer 3D on a simulated Unitree L1 (loop closure)](report/assets/unitree_noisy_loop_closures.png)
+## Demo
+
+**3D:** a map built from a simulated Unitree L1 LiDAR + IMU (MuJoCo), 90 s of
+data, revealed scan by scan. Click for the full video
+([`map_3d.mp4`](docs/media/map_3d.mp4), 720p).
+
+[![3D map being built](docs/media/map_3d.gif)](docs/media/map_3d.mp4)
+
+**2D:** Cartographer's occupancy grid (`Slam::map_2d()` snapshots) while a
+simulated robot tours an office twice. Click for the full video
+([`map_2d.mp4`](docs/media/map_2d.mp4)).
+
+[![2D occupancy grid being built](docs/media/map_2d.gif)](docs/media/map_2d.mp4)
+
+Regenerate: `cargo run --release -p cartographer-demos --example map_2d_video`
+and `crates/demos/scripts/render_map_3d_video.py` (see
+[`crates/demos/README.md`](crates/demos/README.md)).
 
 ## Workspace
 

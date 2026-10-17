@@ -353,3 +353,24 @@ No change to the `cartographer` crate was needed.
   pose) shows them.
 - The error and drift statistics use node poses only. Scans dropped by the
   motion filter are not evaluated.
+
+## Promo media (map videos and summary image)
+
+The clips and image at the top of the repository README are produced by:
+
+```sh
+# 2D: occupancy grid snapshots during a simulated office tour (needs ffmpeg).
+cargo run --release -p cartographer-demos --example map_2d_video -- target/media/cartographer_rust_2d_map.mp4
+
+# 3D: camera orbit around the Unitree L1 map; input is the --record log of unitree_l1_bag.
+python crates/demos/scripts/render_map_3d_video.py target/unitree_l1/slam_run.jsonl \
+    --out target/media/cartographer_rust_3d_map.mp4
+
+# Summary image: 1080x1350 portrait, or 1920x1080 with --landscape (video thumbnail).
+python crates/demos/scripts/linkedin_chart.py target/unitree_l1/slam_run.jsonl \
+    --landscape --out target/media/cartographer_rust_thumbnail_1920x1080.png
+```
+
+The Python scripts need `numpy`, `matplotlib` and `Pillow` (the venv of the
+`unitree-l1-sim` tools works). The README copies in `docs/media/` are
+downscaled: MP4s re-encoded at 720p, GIF previews at 640–800 px.

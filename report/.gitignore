@@ -1,0 +1,2 @@
+# Videos are large; they are copied in when the report is regenerated.
+assets/*.mp4

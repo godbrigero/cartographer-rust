@@ -1,5 +1,42 @@
+# --- Rust / Cargo ---------------------------------------------------------
 /target
 **/*.rs.bk
+# rustc/MSVC debug info written next to binaries on Windows
+*.pdb
+
+# --- Python helper scripts (crates/demos/scripts, tools/) ----------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Default outputs of examples and demos when run from the repo root ---
+# (most demos write under target/; these are the cwd-relative defaults)
+/slam_2d_output/
+/slam_3d_output/
+/faithful_api.pbstream
+/cartographer_rust_2d_map.mp4
+/cartographer_rust_2d_map.frames/
+*.frames/
+
+# --- Report scratch ------------------------------------------------------
 /report/*.tmp
-/.claude/
+
+# --- OS / editor files ---------------------------------------------------
 .DS_Store
+._*
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.fleet/
+*.code-workspace
+
+# --- Local agent worktrees ----------------------------------------------
+/.claude/

@@ -12,10 +12,12 @@ compares the result with the ground truth stored in the bag.
 
 ```bash
 cargo run --release -p cartographer-demos --example unitree_l1_bag -- \
-    <BAG> [--out DIR] [--lua FILE]
+    <BAG> [--out DIR] [--lua FILE] [--record FILE]
 ```
 
 - `--out DIR`: output directory. Default: `target/unitree_l1/`.
+- `--record FILE`: also record the run over time for the video renderer
+  (see [Video of a run](#video-of-a-run)).
 - `--lua FILE`: a cartographer_ros-style Lua file that replaces the built-in
   configuration. The file must return `{ map_builder = MAP_BUILDER,
   trajectory_builder = TRAJECTORY_BUILDER, ... }` with
@@ -138,6 +140,73 @@ Machine: Apple M3 Max, release build. Pose graph: 899 nodes, 8 submaps.
   numbers stay between 1.7 and 4.2 cm.
 - Loop closure runs on 4 background threads, so the optimized numbers can
   change by a few millimeters between runs. Local SLAM is deterministic.
+
+### Video of a run
+
+`--record FILE` writes a JSON-lines log of the run as it happens (about
+9 MB for the 90 s bag), and `scripts/render_slam_video.py` turns it into a
+1600×900, 30 fps video (about 40 s, one frame per node plus a short
+animation after each global optimization):
+
+```bash
+cargo run --release -p cartographer-demos --example unitree_l1_bag -- \
+    tools/unitree_l1_sim/out/unitree_l1_loop.bag --out target/unitree_l1 \
+    --record target/unitree_l1/slam_run.jsonl
+# Python with numpy and matplotlib (e.g. the simulator's venv); ffmpeg on PATH.
+tools/unitree_l1_sim/.venv/bin/python crates/demos/scripts/render_slam_video.py \
+    target/unitree_l1/slam_run.jsonl -o target/unitree_l1/slam_run.mp4 \
+    --keyframes target/unitree_l1/keyframes
+```
+
+`--frames 100,400` renders only those frames as PNGs into `--keyframes`,
+which is useful to check the layout. `--jobs N` sets the number of rendering
+processes. Rendering takes about 40 s on 14 processes.
+
+The log has one JSON object per line. Poses are `[x, y, z, qx, qy, qz, qw]`
+and times are bag seconds.
+
+| `type` | Content |
+|---|---|
+| `header` | Bag start time `t0` and the frame conventions |
+| `ground_truth` | `/ground_truth/pose` as `[t, x, y, z, qx, qy, qz, qw]` |
+| `node` | One per node, in order. It holds the node id, the time, the local pose, and the live global estimate (local-to-global transform at that moment × local pose). It also holds up to 440 scan points in the **node** (tracking) frame: up to 360 below the ceiling and 80 on it. The node frame lets a renderer move the points when the node's pose is optimized. |
+| `optimization` | One per global optimization the main thread observes. It holds the bag and wall time, the last optimized node, and the local-to-global transform. It also holds every node's global pose, every submap's global pose, the inter-submap constraints as `[node, submap, closes_loop]`, and the constraint counts. |
+| `final` | The rigid alignments `world_from_map` and `world_from_local` (from the ATE evaluation) and the final metrics |
+
+The callbacks only queue data. The optimization callback runs on a
+background thread while Cartographer holds its locks. The pose graph is read
+on the main thread between `push_*` calls. Recording does not change the
+results: `metrics.json` (except timing), the trajectories, and `map.ply` are
+byte-identical with and without `--record`. Two optimizations can land
+between two reads. The final optimization of `finish()` is one example. A
+snapshot then covers both, and its `index` is the optimization count.
+
+The video has four panels:
+
+- **Top-down view (left).** Each node's points, minus the ceiling and
+  coloured by height, are drawn at the node's current best pose. That pose
+  comes from the latest optimization snapshot if one covers the node,
+  otherwise from the live estimate. Overlaid are the ground truth (green),
+  the current trajectory estimate (red), local SLAM only (dashed blue), and
+  the current scan (white). After each optimization the map and trajectory
+  animate from the old poses to the new ones. The constraints flash from
+  node to submap origin (loop closures in magenta, other inter-submap
+  constraints in cyan), with a banner such as "global optimization #k — N
+  loop closures".
+- **3D view and zoom (right top).** A rotating 3D view of the map, next to a
+  ±40 cm zoom around the robot. The drift and the corrections are a few
+  centimeters, which cannot be seen at room scale.
+- **Translation error against ground truth (right middle).** Three curves:
+  local SLAM only, the live estimate when each scan arrived, and the whole
+  trajectory as currently estimated. The last one is redrawn every frame:
+  it climbs for nodes that no optimization covers yet and drops after each
+  optimization.
+- **Statistics (right bottom).** Sim time, nodes, submaps, optimizations,
+  constraints, and the ATE so far.
+
+All panels use the ground-truth frame through the fixed alignments in
+`final`. Only the frame changes; each estimate is the one the system had at
+that moment.
 
 ### Configuration
 

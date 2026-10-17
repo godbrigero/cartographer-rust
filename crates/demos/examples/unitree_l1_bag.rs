@@ -15,19 +15,30 @@
 //! results. Outputs (default `target/unitree_l1/`): `map.ply`,
 //! `map.pbstream`, `trajectory_tum.txt`, `local_trajectory_tum.txt`,
 //! `ground_truth_tum.txt`, `metrics.json` and PNG plots.
+//!
+//! With `--record FILE` the example also writes a JSON-lines log of the run
+//! over time (every node with its live global estimate and a subsampled
+//! scan, every global optimization with all node/submap poses and the
+//! loop-closure constraints, and the ground truth), which
+//! `crates/demos/scripts/render_slam_video.py` turns into a video. Recording
+//! only reads state between `push_*` calls and does not change the results.
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use cartographer::mapping::id::NodeId;
 use cartographer::mapping::pose_graph_interface::Tag;
 use cartographer::slam::points_relative_to_first;
+use cartographer::transform::rigid_transform::Rigid3d;
 use cartographer::{
-    Extrinsics, ImuSample, MapPoint, Mode, Slam, SlamBuilder, SlamConfig, SlamStats, Timestamp,
+    Extrinsics, ImuSample, LocalResult, MapPoint, Mode, Slam, SlamBuilder, SlamConfig, SlamStats,
+    Timestamp,
 };
 use cartographer_demos::canvas::{Canvas, Color, View, colors};
 use cartographer_rosbag::msgs::{Imu, PointCloud2, PoseStamped, TFMessage};
@@ -61,6 +72,10 @@ struct Args {
     /// trajectory_builder = ... }`) replacing the built-in L1 configuration.
     #[arg(long)]
     lua: Option<PathBuf>,
+    /// Record the run over time (JSON lines) for
+    /// `crates/demos/scripts/render_slam_video.py`.
+    #[arg(long)]
+    record: Option<PathBuf>,
 }
 
 /// Configuration for a Unitree L1 on a small robot indoors: Cartographer's
@@ -201,6 +216,15 @@ fn main() -> Result<()> {
         .lidar(CLOUD_TOPIC, Extrinsics::from_isometry(tracking_from_lidar))
         .imu(IMU_TOPIC, Extrinsics::from_isometry(tracking_from_imu))
         .build()?;
+    let mut recorder = match &args.record {
+        Some(path) => Some(Recorder::new(
+            path,
+            &slam,
+            bag_start.as_secs_f64(),
+            &ground_truth,
+        )?),
+        None => None,
+    };
 
     let wall_start = Instant::now();
     let mut next_report = bag_start.as_secs_f64() + 10.0;
@@ -238,6 +262,9 @@ fn main() -> Result<()> {
             num_clouds += 1;
         }
         let t = message.time.as_secs_f64();
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.poll(&slam, t, wall_start.elapsed().as_secs_f64())?;
+        }
         if t >= next_report {
             next_report += 10.0;
             let elapsed = wall_start.elapsed().as_secs_f64();
@@ -258,6 +285,10 @@ fn main() -> Result<()> {
     slam.finish()?;
     let finish_seconds = finish_start.elapsed().as_secs_f64();
     let total_seconds = wall_start.elapsed().as_secs_f64();
+    if let Some(recorder) = recorder.as_mut() {
+        // The final optimization of `finish()`.
+        recorder.poll(&slam, bag_end.as_secs_f64(), total_seconds)?;
+    }
     println!(
         "Fed {num_clouds} clouds ({num_points} points) and {num_imu} IMU samples in {feed_seconds:.1} s; \
          finish() took {finish_seconds:.1} s; total {total_seconds:.1} s = {:.1}x real time",
@@ -371,6 +402,22 @@ fn main() -> Result<()> {
         optimized: positions(&estimate, &world_from_map),
         local: positions(&local_estimate, &world_from_local),
     };
+    if let Some(mut recorder) = recorder.take() {
+        recorder.finish(
+            &slam,
+            &world_from_map,
+            &world_from_local,
+            evaluation.as_ref(),
+        )?;
+        println!(
+            "Recorded {} nodes and {} optimizations to {}",
+            recorder.num_nodes,
+            recorder.num_optimizations,
+            args.record
+                .as_ref()
+                .map_or(String::new(), |p| p.display().to_string())
+        );
+    }
     let constraints = constraint_segments(&slam, &world_from_map);
     let plots = render_plots(
         &args.out,
@@ -396,6 +443,295 @@ fn main() -> Result<()> {
         println!("  {}", args.out.join(name).display());
     }
     Ok(())
+}
+
+// ----------------------------------------------------------------------
+// Recording (--record)
+// ----------------------------------------------------------------------
+
+/// Maximum points kept per node below the ceiling, and on the ceiling.
+const RECORD_WALL_POINTS: usize = 360;
+const RECORD_CEILING_POINTS: usize = 80;
+
+/// Writes the run over time as JSON lines (one object per line, `"type"`
+/// first): `header`, `ground_truth`, then `node` and `optimization` records
+/// in the order they happened, then `final`. Poses are
+/// `[x, y, z, qx, qy, qz, qw]`; times are bag seconds.
+///
+/// The SLAM callbacks only queue data (the optimization callback runs on a
+/// background thread while Cartographer holds its locks); the pose graph is
+/// read from the main thread in [`Recorder::poll`], between `push_*` calls.
+struct Recorder {
+    out: std::io::BufWriter<std::fs::File>,
+    trajectory_id: i32,
+    pending_nodes: Arc<Mutex<Vec<LocalResult>>>,
+    optimizations: Arc<AtomicUsize>,
+    /// Last node index included in the latest optimization.
+    last_optimized_node: Arc<Mutex<Option<i32>>>,
+    num_nodes: usize,
+    num_optimizations: usize,
+}
+
+fn pose_json(p: &Isometry3<f64>) -> String {
+    let t = p.translation.vector;
+    let q = p.rotation.coords;
+    format!(
+        "[{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6}]",
+        t.x, t.y, t.z, q.x, q.y, q.z, q.w
+    )
+}
+
+fn rigid_to_isometry(r: &Rigid3d) -> Isometry3<f64> {
+    Isometry3::from_parts(
+        Translation3::from(*r.translation()),
+        UnitQuaternion::new_normalize(*r.rotation()),
+    )
+}
+
+/// Subsamples a scan for the recording, in the node (tracking) frame. The
+/// ceiling (the most populated 10 cm height slice above the sensor, ~70 % of
+/// the L1's returns) is kept sparsely so that walls and obstacles dominate.
+fn subsample_scan(
+    local_pose: &Isometry3<f64>,
+    points_in_local: &[Vector3<f32>],
+) -> Vec<Vector3<f64>> {
+    let heights: Vec<f64> = points_in_local
+        .iter()
+        .map(|p| f64::from(p.z) - local_pose.translation.vector.z)
+        .collect();
+    let mut histogram: HashMap<i64, usize> = HashMap::new();
+    for h in heights.iter().filter(|h| **h > 0.5) {
+        *histogram.entry((h / 0.1).floor() as i64).or_default() += 1;
+    }
+    let ceiling_cut = histogram
+        .into_iter()
+        .max_by_key(|&(bin, count)| (count, bin))
+        .map_or(f64::INFINITY, |(bin, _)| bin as f64 * 0.1 - 0.2);
+    let (mut ceiling, mut other) = (Vec::new(), Vec::new());
+    for (p, h) in points_in_local.iter().zip(&heights) {
+        if *h >= ceiling_cut {
+            ceiling.push(*p);
+        } else {
+            other.push(*p);
+        }
+    }
+    // Evenly strided (deterministic) subsets.
+    let pick = |v: &[Vector3<f32>], n: usize| -> Vec<Vector3<f32>> {
+        if v.len() <= n {
+            return v.to_vec();
+        }
+        (0..n).map(|k| v[k * v.len() / n]).collect()
+    };
+    let node_from_local = local_pose.inverse();
+    pick(&other, RECORD_WALL_POINTS)
+        .into_iter()
+        .chain(pick(&ceiling, RECORD_CEILING_POINTS))
+        .map(|p| (node_from_local * Point3::from(p.cast::<f64>())).coords)
+        .collect()
+}
+
+/// `[id,x,y,z,qx,qy,qz,qw]` (a pose with its id or time in front).
+fn id_pose_json(id: impl std::fmt::Display, pose: &Isometry3<f64>) -> String {
+    format!("[{id},{}", &pose_json(pose)[1..])
+}
+
+impl Recorder {
+    fn new(path: &Path, slam: &Slam, t0: f64, ground_truth: &[TimedPose]) -> Result<Self> {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(
+            out,
+            "{{\"type\":\"header\",\"version\":1,\"t0\":{t0:.9},\"tracking_frame\":\"{TRACKING_FRAME}\",\
+             \"pose_format\":\"x y z qx qy qz qw\",\"points_frame\":\"node (tracking)\"}}"
+        )?;
+        let poses: Vec<String> = ground_truth
+            .iter()
+            .map(|p| id_pose_json(format!("{:.4}", p.time), &p.pose))
+            .collect();
+        writeln!(
+            out,
+            "{{\"type\":\"ground_truth\",\"poses\":[{}]}}",
+            poses.join(",")
+        )?;
+
+        let pending_nodes = Arc::new(Mutex::new(Vec::new()));
+        let optimizations = Arc::new(AtomicUsize::new(0));
+        let last_optimized_node = Arc::new(Mutex::new(None));
+        let trajectory_id = slam.trajectory_id();
+        {
+            let pending = Arc::clone(&pending_nodes);
+            slam.on_local_result(move |result| {
+                if result.node_id.is_some() {
+                    pending
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(result.clone());
+                }
+            });
+        }
+        {
+            let optimizations = Arc::clone(&optimizations);
+            let last = Arc::clone(&last_optimized_node);
+            slam.on_global_optimization(move |event| {
+                *last.lock().unwrap_or_else(PoisonError::into_inner) = event
+                    .last_optimized_nodes
+                    .get(&trajectory_id)
+                    .map(|n| n.node_index);
+                optimizations.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        Ok(Self {
+            out,
+            trajectory_id,
+            pending_nodes,
+            optimizations,
+            last_optimized_node,
+            num_nodes: 0,
+            num_optimizations: 0,
+        })
+    }
+
+    /// Writes the nodes added and the optimizations run since the last call.
+    /// `time` is the bag time of the last message fed, `wall` the seconds
+    /// since the start of the run.
+    fn poll(&mut self, slam: &Slam, time: f64, wall: f64) -> Result<()> {
+        let nodes = std::mem::take(
+            &mut *self
+                .pending_nodes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        if !nodes.is_empty() {
+            let local_to_global = rigid_to_isometry(
+                &slam
+                    .pose_graph()
+                    .get_local_to_global_transform(self.trajectory_id),
+            );
+            for node in nodes {
+                let Some(id) = node.node_id else { continue };
+                let points: Vec<String> = subsample_scan(&node.local_pose, &node.points_in_local)
+                    .iter()
+                    .map(|p| format!("{:.3},{:.3},{:.3}", p.x, p.y, p.z))
+                    .collect();
+                writeln!(
+                    self.out,
+                    "{{\"type\":\"node\",\"id\":{},\"t\":{:.6},\"local\":{},\"global\":{},\"points\":[{}]}}",
+                    id.node_index,
+                    node.time.as_secs_f64(),
+                    pose_json(&node.local_pose),
+                    pose_json(&(local_to_global * node.local_pose)),
+                    points.join(",")
+                )?;
+                self.num_nodes += 1;
+            }
+        }
+        let optimizations = self.optimizations.load(Ordering::SeqCst);
+        if optimizations > self.num_optimizations {
+            self.num_optimizations = optimizations;
+            self.write_optimization(slam, time, wall)?;
+        }
+        Ok(())
+    }
+
+    fn write_optimization(&mut self, slam: &Slam, time: f64, wall: f64) -> Result<()> {
+        let pose_graph = slam.pose_graph();
+        let trajectory_id = self.trajectory_id;
+        let local_to_global =
+            rigid_to_isometry(&pose_graph.get_local_to_global_transform(trajectory_id));
+        let last_node = *self
+            .last_optimized_node
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let stats = slam.stats();
+        let nodes: Vec<String> = pose_graph
+            .get_trajectory_node_poses()
+            .iter()
+            .filter(|n| n.id.trajectory_id == trajectory_id)
+            .map(|n| id_pose_json(n.id.node_index, &rigid_to_isometry(&n.data.global_pose)))
+            .collect();
+        let submaps: Vec<String> = pose_graph
+            .get_all_submap_poses()
+            .iter()
+            .filter(|s| s.id.trajectory_id == trajectory_id)
+            .map(|s| id_pose_json(s.id.submap_index, &rigid_to_isometry(&s.data.pose)))
+            .collect();
+        // Inter-submap constraints as [node, submap, closes_loop], classified
+        // like `Slam::stats`.
+        let constraints = pose_graph.constraints();
+        let mut first_insertion: HashMap<NodeId, i32> = HashMap::new();
+        for c in constraints.iter().filter(|c| c.tag == Tag::IntraSubmap) {
+            let index = first_insertion.entry(c.node_id).or_insert(i32::MAX);
+            *index = (*index).min(c.submap_id.submap_index);
+        }
+        let inter: Vec<String> = constraints
+            .iter()
+            .filter(|c| {
+                c.tag == Tag::InterSubmap
+                    && c.node_id.trajectory_id == trajectory_id
+                    && c.submap_id.trajectory_id == trajectory_id
+            })
+            .map(|c| {
+                let closes_loop = first_insertion
+                    .get(&c.node_id)
+                    .is_some_and(|&first| c.submap_id.submap_index + 1 < first);
+                format!(
+                    "[{},{},{}]",
+                    c.node_id.node_index,
+                    c.submap_id.submap_index,
+                    u8::from(closes_loop)
+                )
+            })
+            .collect();
+        writeln!(
+            self.out,
+            "{{\"type\":\"optimization\",\"index\":{},\"t\":{time:.6},\"wall\":{wall:.3},\
+             \"last_optimized_node\":{},\"local_to_global\":{},\"counts\":{{\"nodes\":{},\
+             \"submaps\":{},\"intra_submap\":{},\"inter_submap\":{},\"loop_closures\":{}}},\
+             \"nodes\":[{}],\"submaps\":[{}],\"constraints\":[{}]}}",
+            self.num_optimizations,
+            last_node.map_or("null".to_string(), |n| n.to_string()),
+            pose_json(&local_to_global),
+            stats.num_nodes,
+            stats.num_submaps,
+            stats.num_intra_submap_constraints,
+            stats.num_inter_submap_constraints,
+            stats.num_loop_closure_constraints,
+            nodes.join(","),
+            submaps.join(","),
+            inter.join(",")
+        )?;
+        Ok(())
+    }
+
+    /// Writes the alignments to the ground truth and the final metrics.
+    fn finish(
+        &mut self,
+        slam: &Slam,
+        world_from_map: &Isometry3<f64>,
+        world_from_local: &Isometry3<f64>,
+        evaluation: Option<&(Evaluation, Evaluation)>,
+    ) -> Result<()> {
+        let stats = slam.stats();
+        let (optimized, local) = evaluation.map_or((-1.0, -1.0), |(o, l)| {
+            (o.ate.translation.rmse, l.ate.translation.rmse)
+        });
+        writeln!(
+            self.out,
+            "{{\"type\":\"final\",\"world_from_map\":{},\"world_from_local\":{},\
+             \"ate_rmse_optimized_m\":{optimized:.5},\"ate_rmse_local_m\":{local:.5},\
+             \"nodes\":{},\"submaps\":{},\"optimizations\":{},\"loop_closures\":{}}}",
+            pose_json(world_from_map),
+            pose_json(world_from_local),
+            stats.num_nodes,
+            stats.num_submaps,
+            stats.num_global_optimizations,
+            stats.num_loop_closure_constraints
+        )?;
+        self.out.flush()?;
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------

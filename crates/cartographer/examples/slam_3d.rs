@@ -1,7 +1,7 @@
 //! 3D SLAM with the high-level API on a simulated, handheld corridor walk.
 //!
 //! ```text
-//! cargo run --release -p cartographer --example slam_3d -- [OUTPUT_DIR] [LAPS]
+//! cargo run --release -p cartographer-slam --example slam_3d -- [OUTPUT_DIR] [LAPS]
 //! ```
 //!
 //! A person walks `LAPS` (default 1.25) laps around a 3 m high corridor

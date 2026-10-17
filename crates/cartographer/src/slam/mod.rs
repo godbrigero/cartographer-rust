@@ -78,7 +78,7 @@
 //! ```
 //!
 //! The runnable examples `slam_2d` and `slam_3d`
-//! (`cargo run --release -p cartographer --example slam_2d -- out/`) map
+//! (`cargo run --release -p cartographer-slam --example slam_2d -- out/`) map
 //! simulated corridors and write PNG, ROS map, PLY and `.pbstream` files.
 //!
 //! # Frames and conventions

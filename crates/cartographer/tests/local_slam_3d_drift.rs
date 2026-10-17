@@ -5,7 +5,7 @@
 //! `trajectory_builder_3d.lua`) on ideal (noise-free, instantaneous) sensor
 //! data, and `CeresScanMatcher3D` against submaps built from ground-truth
 //! poses. They print their measurements; run them with
-//! `cargo test -p cartographer --test local_slam_3d_drift -- --ignored --nocapture`.
+//! `cargo test -p cartographer-slam --test local_slam_3d_drift -- --ignored --nocapture`.
 
 use cartographer::common::configuration_file_resolver::ConfigurationFileResolver;
 use cartographer::common::lua_parameter_dictionary::LuaParameterDictionary;

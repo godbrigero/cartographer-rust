@@ -1,7 +1,7 @@
 //! 2D SLAM with the high-level API on a simulated corridor loop.
 //!
 //! ```text
-//! cargo run --release -p cartographer --example slam_2d -- [OUTPUT_DIR] [LAPS]
+//! cargo run --release -p cartographer-slam --example slam_2d -- [OUTPUT_DIR] [LAPS]
 //! ```
 //!
 //! A robot drives `LAPS` (default 1.25) laps around a 40 m x 20 m corridor

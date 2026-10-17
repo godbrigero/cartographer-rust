@@ -40,7 +40,7 @@ use criterion::Criterion;
 use nalgebra::{Isometry3, Point3, Quaternion, Vector3};
 
 /// Criterion configuration shared by all benches: few samples and short
-/// measurement windows so `cargo bench -p cartographer` finishes in minutes.
+/// measurement windows so `cargo bench -p cartographer-slam` finishes in minutes.
 pub fn criterion_config() -> Criterion {
     Criterion::default()
         .sample_size(10)

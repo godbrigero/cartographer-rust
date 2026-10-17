@@ -1,129 +1,105 @@
 #!/usr/bin/env python3
-"""Summary image (1080x1350, 4:5 portrait) for sharing the project.
+"""Summary image (1080x1350, 4:5 portrait) for sharing the project: a rendered
+view of the 3D map plus four plain-language numbers. Dark theme, matching
+the map videos.
 
-Numbers come from the end-to-end tests (target/e2e/*.json) and the Unitree
-L1 demo (target/unitree_l1/noisy/metrics.json); pass --static to use the
-values recorded below instead.
-Usage: python linkedin_chart.py --out target/media/cartographer_rust_summary.png
+Usage:
+  python linkedin_chart.py target/unitree_l1/slam_run.jsonl --out target/media/cartographer_rust_summary.png
 """
 import argparse
 import json
 import os
+import sys
 
-import matplotlib
+import numpy as np
+from matplotlib import colormaps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.patches import FancyBboxPatch  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from render_map_3d_video import load, polyline, project, render  # noqa: E402
 
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-INK_3 = "#8a8984"
-GRID = "#e6e5e0"
-OPTIMIZED = "#2a78d6"   # categorical slot 1
-LOCAL = "#bdbcb6"       # de-emphasized comparison
-
-# (label, path length m, local-only ATE cm, full SLAM ATE cm) -- defaults
-# from the runs used for the report; refreshed from JSON when available.
-SCENARIOS = [
-    ("2D corridor, 2 loops", "corridor_2d", 215.8, 2.92, 1.25),
-    ("2D office tour", "office_2d", 98.6, 0.62, 0.53),
-    ("3D corridor, 2 loops", "corridor_3d", 219.8, 40.83, 10.71),
-    ("3D room, handheld", "room_3d", 61.9, 11.44, 4.23),
-    ("Unitree L1 + IMU (MuJoCo)", None, 98.7, 7.22, 1.83),
-]
+W, H = 1080, 1350
+BG = (10, 12, 18)
+INK = (240, 243, 248)
+INK_2 = (150, 158, 172)
+ACCENT = (64, 182, 255)
+CARD = (22, 27, 38)
 
 
-def refresh(root):
-    out = []
-    for label, key, length, local, full in SCENARIOS:
-        if key:
-            p = os.path.join(root, "target/e2e", key + ".json")
-            if os.path.exists(p):
-                d = json.load(open(p))
-                local = d["local_slam_trajectory"]["ate_rmse_m"] * 100
-                full = d["trajectory"]["ate_rmse_m"] * 100
-                length = d["trajectory"]["path_length_m"]
-        out.append((label, length, local, full))
-    return out
+def font(size, bold=False):
+    candidates = (["/System/Library/Fonts/HelveticaNeue.ttc"] if sys.platform == "darwin" else []) + [
+        "/System/Library/Fonts/Helvetica.ttc", "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size, index=1 if bold and path.endswith(".ttc") else 0)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def map_render(record, width, height):
+    clouds, path = load(record)
+    pts = np.concatenate(clouds)
+    pts = pts[pts[:, 2] < 2.75]
+    col = colormaps["turbo"](np.clip(pts[:, 2] / 2.75, 0, 1) * 0.9 + 0.05)[:, :3].astype(np.float32)
+    ss = 2
+    center = np.array([0.0, 0.0, 0.7])
+    a, elev, radius = np.radians(-62), np.radians(38), 25.5
+    eye = center + radius * np.array([np.cos(a) * np.cos(elev), np.sin(a) * np.cos(elev), np.sin(elev)])
+    img = render(pts, col, eye, center, width * ss, height * ss, 46, splat=3)
+    p2, d = project(path, eye, center, width * ss, height * ss, 46)
+    trail = polyline(np.zeros_like(img), p2[d > 0.3], (255, 255, 255), 2 * ss)
+    img = np.maximum(img, 0.4 * trail)
+    pil = Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8))
+    return pil.filter(ImageFilter.GaussianBlur(0.6)).resize((width, height), Image.LANCZOS)
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("record", help="slam_run.jsonl written by unitree_l1_bag --record")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--root", default=".")
-    ap.add_argument("--static", action="store_true")
     args = ap.parse_args()
-    rows = [(a, c, d, e) for a, _, c, d, e in SCENARIOS] if args.static else refresh(args.root)
+    final = [json.loads(l) for l in open(args.record) if '"type":"final"' in l][0]
 
-    plt.rcParams.update({"font.family": "Helvetica Neue", "font.size": 15})
-    fig = plt.figure(figsize=(10.8, 13.5), dpi=100, facecolor=SURFACE)
+    img = Image.new("RGB", (W, H), BG)
+    hero_h = 610
+    img.paste(map_render(args.record, W, hero_h), (0, 250))
+    # Fade the hero image into the background at top and bottom.
+    fade = Image.new("L", (W, hero_h), 255)
+    fd = ImageDraw.Draw(fade)
+    for i in range(70):
+        a = int(255 * i / 70)
+        fd.line([(0, i), (W, i)], fill=a)
+        fd.line([(0, hero_h - 1 - i), (W, hero_h - 1 - i)], fill=a)
+    bg = Image.new("RGB", (W, hero_h), BG)
+    img.paste(Image.composite(img.crop((0, 250, W, 250 + hero_h)), bg, fade), (0, 250))
 
-    # Title block.
-    fig.text(0.06, 0.945, "Google Cartographer, rewritten in pure Rust",
-             fontsize=34, fontweight="bold", color=INK, va="top")
-    fig.text(0.06, 0.893, "2D/3D LiDAR + IMU SLAM  ·  faithful port of the C++ library  ·  "
-             "builds with a plain `cargo build`", fontsize=16, color=INK_2, va="top")
+    d = ImageDraw.Draw(img)
+    x0 = 64
+    d.text((x0, 70), "Google Cartographer,", font=font(58, True), fill=INK)
+    d.text((x0, 136), "rewritten in pure Rust", font=font(58, True), fill=ACCENT)
+    d.text((x0, 214), "LiDAR + IMU SLAM: a 3D map built from a simulated Unitree L1 scan",
+           font=font(23), fill=INK_2)
 
-    # Hero stats.
-    tiles = [("338 / 338", "C++ unit tests ported\nand passing"),
-             ("1,482", "Rust tests: unit,\nproperty, end-to-end"),
-             ("0", "C/C++ dependencies;\nmacOS, Linux, Windows"),
-             ("~40×", "real time: 3D SLAM on a\nsimulated Unitree L1")]
-    x0, w, gap, y0, h = 0.06, 0.205, 0.0167, 0.715, 0.135
-    for i, (big, small) in enumerate(tiles):
-        x = x0 + i * (w + gap)
-        fig.patches.append(FancyBboxPatch((x, y0), w, h, boxstyle="round,pad=0,rounding_size=0.012",
-                                          transform=fig.transFigure, facecolor="white",
-                                          edgecolor=GRID, linewidth=1.2))
-        fig.text(x + 0.018, y0 + h - 0.022, big, fontsize=31, fontweight="bold", color=INK, va="top")
-        fig.text(x + 0.018, y0 + 0.022, small, fontsize=12.5, color=INK_2, va="bottom", linespacing=1.35)
+    ate_cm = final["ate_rmse_optimized_m"] * 100
+    stats = [
+        ("338 / 338", "of the original C++ tests\nported and passing"),
+        (f"{ate_cm:.1f} cm", "average position error\nafter a 99 m walk"),
+        ("40×", "faster than real time\non a laptop"),
+        ("0", "C/C++ dependencies:\njust `cargo build`"),
+    ]
+    cw, ch, gap = 462, 170, 28
+    top = 880
+    for i, (big, small) in enumerate(stats):
+        cx = x0 + (i % 2) * (cw + gap)
+        cy = top + (i // 2) * (ch + gap)
+        d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=18, fill=CARD)
+        d.text((cx + 30, cy + 22), big, font=font(56, True), fill=INK)
+        d.multiline_text((cx + 30, cy + 98), small, font=font(22), fill=INK_2, spacing=6)
 
-    # Chart.
-    ax = fig.add_axes([0.37, 0.13, 0.57, 0.44], facecolor=SURFACE)
-    fig.text(0.06, 0.655, "Trajectory error vs. ground truth (ATE RMSE, cm)",
-             fontsize=20, fontweight="bold", color=INK, va="top")
-    fig.text(0.06, 0.623, "Lower is better. Local SLAM alone drifts; Cartographer's loop closure "
-             "and pose-graph\noptimization pull the trajectory back.", fontsize=13.5, color=INK_2,
-             va="top", linespacing=1.35)
-    n = len(rows)
-    bh = 0.34
-    ys = list(range(n))[::-1]
-    xmax = max(r[2] for r in rows) * 1.22
-    ax.set_xlim(0, xmax)
-    ax.set_ylim(-0.7, n - 0.3)
-    label_tf = ax.get_yaxis_transform()  # x in axes fraction, y in data
-    for y, (label, length, local, full) in zip(ys, rows):
-        ax.barh(y + bh / 2 + 0.01, local, height=bh, color=LOCAL, zorder=2)
-        ax.barh(y - bh / 2 - 0.01, full, height=bh, color=OPTIMIZED, zorder=2)
-        ax.text(local + xmax * 0.012, y + bh / 2 + 0.01, f"{local:.1f}", va="center",
-                fontsize=13, color=INK_2)
-        ax.text(full + xmax * 0.012, y - bh / 2 - 0.01, f"{full:.1f}", va="center",
-                fontsize=13, color=INK, fontweight="bold")
-        ax.text(-0.535, y + 0.17, label, transform=label_tf, fontsize=14.5, color=INK, va="center")
-        ax.text(-0.535, y - 0.2, f"{length:.0f} m path", transform=label_tf, fontsize=12,
-                color=INK_3, va="center")
-    ax.set_yticks([])
-    ax.xaxis.grid(True, color=GRID, linewidth=1, zorder=0)
-    ax.tick_params(axis="x", colors=INK_3, labelsize=12, length=0)
-    for s in ax.spines.values():
-        s.set_visible(False)
-
-    # Legend (two series).
-    ly = 0.092
-    for x, color, text in [(0.06, LOCAL, "Local SLAM only (no loop closure)"),
-                           (0.42, OPTIMIZED, "Full Cartographer (loop closure + pose-graph optimization)")]:
-        fig.patches.append(FancyBboxPatch((x, ly - 0.006), 0.018, 0.012,
-                                          boxstyle="round,pad=0,rounding_size=0.003",
-                                          transform=fig.transFigure, facecolor=color, edgecolor="none"))
-        fig.text(x + 0.025, ly, text, fontsize=12.5, color=INK_2, va="center")
-
-    fig.text(0.06, 0.03, "Synthetic datasets with exact ground truth (simulated LiDAR/IMU/odometry; "
-             "Unitree L1 simulated in MuJoCo).\nAlignment: rigid SE(3). Same algorithms, constants and "
-             "defaults as upstream Cartographer.", fontsize=11.5, color=INK_3, va="bottom",
-             linespacing=1.4)
-    fig.savefig(args.out, facecolor=SURFACE)
+    d.text((x0, H - 52), "Simulated sensors with exact ground truth  ·  same algorithms & defaults as upstream",
+           font=font(18), fill=(95, 102, 116))
+    img.save(args.out)
     print("wrote", args.out)
 
 

@@ -106,6 +106,70 @@ cargo run --release -p cartographer-slam --example slam_2d -- out/   # PNG, ROS 
 cargo run --release -p cartographer-slam --example slam_3d -- out/   # PLY, TUM trajectory, pbstream
 ```
 
+### Live SLAM: pose and map while you drive
+
+You don't have to replay a bag. Push data from your sensor drivers as it
+arrives, and read the current pose and map whenever you need them. Local
+SLAM runs inside each `push_*` call. Loop closure and global optimization
+run on Cartographer's background threads, so there is nothing else to call.
+
+```rust
+use cartographer::{Extrinsics, Mode, Slam};
+
+let mut slam = Slam::builder(Mode::ThreeD)            // or Mode::TwoD
+    .lidar("lidar", Extrinsics::from_xyz_rpy(0.0, 0.0, 0.1, 0.0, 0.0, 0.0))
+    .imu("imu", Extrinsics::identity())
+    .build()?;
+
+loop {
+    // From your driver callbacks / channel, in (roughly) time order:
+    match next_message() {
+        Msg::Imu(t, imu) => slam.push_imu(t, imu)?,
+        Msg::Lidar(t, points) => slam.push_lidar("lidar", t, &points)?,
+        Msg::Shutdown => break,
+    }
+
+    // Any time, e.g. at your control rate:
+    if let Some(pose) = slam.current_pose() {   // latest scan, loop-closure corrected
+        let (position, rotation) = (pose.pose.translation, pose.pose.rotation);
+        // ... drive the robot
+    }
+    // Less often (each call composes all submaps at their optimized poses):
+    let map = slam.map_3d()?;                    // Mode::TwoD: slam.map_2d()? -> OccupancyGrid
+}
+slam.finish()?;                                  // final optimization
+slam.save("map.pbstream")?;
+```
+
+What you can read while it runs:
+
+| Call | Returns |
+|---|---|
+| `current_pose()` | Latest pose of the tracking frame in the map frame, with the current loop-closure correction applied. |
+| `trajectory()` / `pose_at(t)` | Optimized poses of all nodes so far / interpolated at a time. |
+| `map_2d()` | `OccupancyGrid`: probabilities per cell, `.to_png()`, `.to_ros_map()`. |
+| `map_3d()` | `PointMap`: occupied voxels, `.to_ply()`. |
+| `submaps()`, `stats()` | Submap poses, node, constraint and loop closure counts. |
+| `on_local_result(cb)` | Callback per matched scan (pose + points), from inside `push_*`. |
+| `on_global_optimization(cb)` | Callback after each loop-closure optimization. |
+
+`Slam` is `Send`, so it can live on its own thread. Share it as
+`Arc<Mutex<Slam>>` if other threads need to query it. A runnable version
+streams simulated sensors in real time and prints the live pose and map
+every second:
+
+```sh
+cargo run --release -p cartographer-slam --example live_slam -- 2d   # 2D LiDAR + IMU + odometry
+cargo run --release -p cartographer-slam --example live_slam -- 3d   # 16-beam 3D LiDAR + IMU
+```
+
+The live pose is the online estimate. Before a loop closes it carries local
+SLAM drift, and after a closure it jumps to the corrected estimate. On the
+simulated runs the live poses are within 2.7 cm RMSE of ground truth in 2D
+and 66 cm in 3D (handheld, no odometry, about 4° of yaw drift before the
+first loop closure). The final optimized trajectories are within 1.0 cm and
+13 cm.
+
 ## The faithful API
 
 Everything a C++ Cartographer user knows is where they expect it, in

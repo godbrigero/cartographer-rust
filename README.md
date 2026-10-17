@@ -55,7 +55,7 @@ Nothing is published yet ([`RELEASING.md`](RELEASING.md)).
 
 ## Build and test
 
-Requires a stable Rust toolchain (1.88 or newer). On any tier-1 target:
+Requires a stable Rust toolchain (1.89 or newer). On any tier-1 target:
 
 ```sh
 cargo build --workspace --all-features

@@ -7,6 +7,8 @@ edition.workspace = true
 # Apache-2.0 like Cartographer (LICENSE). See NOTICE.
 license = "Apache-2.0 AND BSD-3-Clause"
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/cartographer-ceres"
 readme = "README.md"
 keywords = ["least-squares", "optimization", "autodiff", "ceres", "solver"]

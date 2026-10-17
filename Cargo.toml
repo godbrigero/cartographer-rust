@@ -6,9 +6,9 @@ members = ["crates/cartographer", "crates/cartographer-cloud", "crates/ceres","c
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.88"
-# No `repository`: this port is not hosted at the upstream C++ repository
-# (set it once the Rust repository is public).
+rust-version = "1.89"
+repository = "https://github.com/godbrigero/cartographer-rust"
+homepage = "https://github.com/godbrigero/cartographer-rust"
 
 [workspace.dependencies]
 nalgebra = "0.35"

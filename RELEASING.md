@@ -1,8 +1,7 @@
 # Releasing to crates.io
 
-**Nothing has been published yet.** Publishing is irreversible (versions
-can only be yanked, never deleted) and is done by the maintainer, not by
-automation.
+Publishing is irreversible (versions can only be yanked, never deleted)
+and is done by the maintainer, not by automation.
 
 ## Crates
 
@@ -107,9 +106,13 @@ from Ceres Solver (New BSD), whose license text is in
 `crates/ceres/LICENSE-CERES`. `cartographer-sim` is original code
 (Apache-2.0).
 
-## Before the first release
+## Minimum Rust version
 
-- Add `repository = "..."` to `[workspace.package]` (and
-  `repository.workspace = true` in the crates) once the Rust repository is
-  public.
-- Verify the declared `rust-version` (1.88) with that toolchain.
+`rust-version` is 1.89 (required by `nalgebra` 0.35). Check it before each
+release:
+
+```sh
+rustup toolchain install 1.89 --profile minimal
+CARGO_TARGET_DIR=target/msrv cargo +1.89 check --all-features --all-targets \
+  -p cartographer-ceres -p cartographer-sim -p cartographer-slam -p cartographer-cloud
+```

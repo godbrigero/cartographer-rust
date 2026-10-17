@@ -1,21 +1,24 @@
 [package]
-name = "cartographer"
+name = "cartographer-slam"
 description = "Native Rust port of Google Cartographer (2D/3D SLAM)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-documentation = "https://docs.rs/cartographer"
+documentation = "https://docs.rs/cartographer-slam"
 readme = "README.md"
 keywords = ["slam", "lidar", "robotics", "mapping", "localization"]
 categories = ["science::robotics", "algorithms"]
 # Exposes the absolute path of `proto/` to dependents' build scripts as
 # `DEP_CARTOGRAPHER_PROTO_DIR` (see build.rs); cartographer-cloud uses it.
 links = "cartographer"
-# Tests, examples and benches use the unpublished `cartographer-sim` crate,
-# so they stay in the repository only.
+# The library is imported as `cartographer` (see [lib]); the package is named
+# `cartographer-slam` because `cartographer` is taken on crates.io.
 include = [
     "/src/**/*.rs",
+    "/tests/**/*.rs",
+    "/examples/**/*.rs",
+    "/benches/**/*.rs",
     "/proto/**/*.proto",
     "/configuration_files/*.lua",
     "/build.rs",
@@ -29,6 +32,7 @@ include = [
 all-features = true
 
 [lib]
+name = "cartographer"
 # Keep `cargo bench` to the criterion benches (the unit tests have no
 # #[bench] functions).
 bench = false
@@ -54,7 +58,7 @@ approx.workspace = true
 proptest.workspace = true
 rand.workspace = true
 # Unpublished (publish = false): path-only, so `cargo package` strips it.
-cartographer-sim = { path = "../sim" }
+cartographer-sim = { version = "0.1.0", path = "../sim" }
 criterion.workspace = true
 
 [[bench]]

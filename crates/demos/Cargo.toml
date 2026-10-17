@@ -11,7 +11,7 @@ publish = false
 name = "cartographer_demos"
 
 [dependencies]
-cartographer = { path = "../cartographer" }
+cartographer = { package = "cartographer-slam", path = "../cartographer" }
 cartographer-rosbag = { path = "../rosbag" }
 cartographer-sim = { path = "../sim" }
 nalgebra.workspace = true

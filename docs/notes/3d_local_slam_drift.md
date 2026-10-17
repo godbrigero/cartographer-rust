@@ -23,7 +23,7 @@ therefore ratchets one way instead of averaging out.
 
 All experiments are in `crates/cartographer/tests/local_slam_3d_drift.rs`.
 Run them with
-`cargo test -p cartographer --test local_slam_3d_drift -- --ignored --nocapture`.
+`cargo test -p cartographer-slam --test local_slam_3d_drift -- --ignored --nocapture`.
 Two fast, non-ignored tests pin down the mechanism:
 `occupied_space_cost_snaps_horizontal_plane_to_voxel_centres` and
 `static_sensor_height_bias_follows_low_resolution_voxel_centres`.

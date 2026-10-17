@@ -96,7 +96,7 @@ for each area are in `docs/architecture/`.
 
 ## Quality bar
 
-* `cargo build`, `cargo test -p cartographer`, `cargo clippy --all-targets -- -D warnings`
+* `cargo build`, `cargo test -p cartographer-slam`, `cargo clippy --all-targets -- -D warnings`
   and `cargo fmt` must be clean for your files before you finish.
 * Public items get a short doc comment (C++ header comments are a good source).
 * Report back: files ported, tests ported (C++ name -> Rust name), anything

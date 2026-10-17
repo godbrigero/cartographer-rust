@@ -267,28 +267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cartographer"
-version = "0.1.0"
-dependencies = [
- "approx",
- "cartographer-ceres",
- "cartographer-sim",
- "clap",
- "cpu-time",
- "criterion",
- "flate2",
- "log",
- "nalgebra",
- "num-traits",
- "png",
- "proptest",
- "prost",
- "prost-build",
- "protox",
- "rand 0.9.5",
-]
-
-[[package]]
 name = "cartographer-ceres"
 version = "0.1.0"
 dependencies = [
@@ -307,7 +285,7 @@ dependencies = [
 name = "cartographer-cloud"
 version = "0.1.0"
 dependencies = [
- "cartographer",
+ "cartographer-slam",
  "clap",
  "log",
  "nalgebra",
@@ -326,9 +304,9 @@ dependencies = [
 name = "cartographer-demos"
 version = "0.1.0"
 dependencies = [
- "cartographer",
  "cartographer-rosbag",
  "cartographer-sim",
+ "cartographer-slam",
  "clap",
  "nalgebra",
  "png",
@@ -350,6 +328,28 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha",
  "rand_distr",
+]
+
+[[package]]
+name = "cartographer-slam"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "cartographer-ceres",
+ "cartographer-sim",
+ "clap",
+ "cpu-time",
+ "criterion",
+ "flate2",
+ "log",
+ "nalgebra",
+ "num-traits",
+ "png",
+ "proptest",
+ "prost",
+ "prost-build",
+ "protox",
+ "rand 0.9.5",
 ]
 
 [[package]]

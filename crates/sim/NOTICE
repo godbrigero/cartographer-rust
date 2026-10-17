@@ -1,0 +1,6 @@
+cartographer-sim is part of cartographer-rust, a Rust port of Google
+Cartographer (https://github.com/cartographer-project/cartographer).
+
+This crate contains original code written for the port (it is not derived
+from Cartographer's sources) and is licensed under the Apache License,
+Version 2.0 (see LICENSE).

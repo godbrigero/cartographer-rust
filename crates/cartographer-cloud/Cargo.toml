@@ -37,7 +37,7 @@ default = ["prometheus"]
 prometheus = ["dep:prometheus-client"]
 
 [dependencies]
-cartographer = { version = "0.1.0", path = "../cartographer" }
+cartographer = { package = "cartographer-slam", version = "0.1.0", path = "../cartographer" }
 nalgebra.workspace = true
 prost.workspace = true
 log.workspace = true

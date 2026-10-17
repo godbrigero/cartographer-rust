@@ -5,8 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-# Test-data generator for this workspace; not published (see RELEASING.md).
-publish = false
+documentation = "https://docs.rs/cartographer-sim"
+readme = "README.md"
+keywords = ["slam", "lidar", "imu", "simulation", "robotics"]
+categories = ["science::robotics", "simulation"]
+include = ["/src/**/*.rs", "/examples/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE", "/NOTICE"]
 
 [lib]
 name = "cartographer_sim"

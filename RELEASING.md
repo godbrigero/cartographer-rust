@@ -1,140 +1,115 @@
 # Releasing to crates.io
 
-Three crates are published, in dependency order:
+**Nothing has been published yet.** Publishing is irreversible (versions
+can only be yanked, never deleted) and is done by the maintainer, not by
+automation.
 
-| Package              | Library name         | Depends on                     |
-|----------------------|----------------------|--------------------------------|
-| `cartographer-ceres` | `ceres`              | -                              |
-| `cartographer`       | `cartographer`       | `cartographer-ceres`           |
-| `cartographer-cloud` | `cartographer_cloud` | `cartographer`                 |
+## Crates
 
-Not published (`publish = false`): `cartographer-sim`, `cartographer-rosbag`,
-`xtask` (and the demos). `cartographer-sim` is a path-only dev-dependency of
-`cartographer`; `cargo package` strips it from the published manifest.
+Published, in dependency order:
 
-## Blocker: the `cartographer` name is taken
+| Package              | Library (`use ...`)  | Depends on (published)                         |
+|----------------------|----------------------|------------------------------------------------|
+| `cartographer-ceres` | `ceres`              | –                                              |
+| `cartographer-sim`   | `cartographer_sim`   | – (dev-dependency of `cartographer-slam`)      |
+| `cartographer-slam`  | `cartographer`       | `cartographer-ceres`; dev: `cartographer-sim`  |
+| `cartographer-cloud` | `cartographer_cloud` | `cartographer-slam`                            |
 
-Checked 2026-10-16 (`cargo search`, `https://crates.io/api/v1/crates/<name>`):
+Not published (`publish = false`): `cartographer-rosbag`, `cartographer-demos`,
+`xtask`.
 
-| Name                   | Status                                                        |
-|------------------------|---------------------------------------------------------------|
-| `cartographer`         | **taken** (0.0.1, "Provenance-first dataset platform (namespace reservation)", April 2026) |
-| `cartographer-ceres`   | available                                                     |
-| `cartographer-cloud`   | available                                                     |
-| `cartographer-rs`      | **taken** (unrelated TUI menu crate)                          |
-| `cartographer-slam`    | available                                                     |
-| `cartographer-core`    | available                                                     |
-| `cartographer-sim`     | available                                                     |
-| `cartographer-rosbag`  | available                                                     |
+The main package is named `cartographer-slam` because `cartographer` is
+taken on crates.io (0.0.1, an unrelated "namespace reservation", April
+2026); its library keeps the name `cartographer`, so user code writes
+`use cartographer::...`. Dependents use
+`cartographer = { package = "cartographer-slam", version = "0.1" }`.
 
-Before publishing, either rename the `cartographer` *package* (e.g. to
-`cartographer-slam`, keeping `[lib] name = "cartographer"` so `use
-cartographer::...` keeps working; dependents then write `cartographer = {
-package = "cartographer-slam", ... }`, like `ceres` does today), or ask the
-owner of the `cartographer` crate to transfer it. Renaming touches
-`crates/cartographer/Cargo.toml`, the `cartographer` dependency of
-`cartographer-cloud`, the `links`/`DEP_CARTOGRAPHER_PROTO_DIR` pair (the
-`links` value can stay `"cartographer"`), docs.rs URLs and the READMEs.
+Name check (2026-10-16): `cartographer-slam`, `cartographer-ceres`,
+`cartographer-cloud`, `cartographer-sim` were available; `cartographer` and
+`cartographer-rs` are taken.
 
-## Checklist
+## Steps
 
-1. All of these pass on a clean tree:
+1. Make sure the tree is clean and green:
 
    ```sh
    cargo fmt --check
    cargo clippy --workspace --all-targets -- -D warnings
-   cargo build --workspace --all-features
    cargo test --workspace
-   RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features \
-       -p cartographer-ceres -p cartographer -p cartographer-cloud
+   for c in cartographer-ceres cartographer-sim cartographer-slam cartographer-cloud; do
+     RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p $c
+   done
    ```
 
-2. Package and verify all three crates together. Cargo puts the earlier
-   packages in a temporary local registry, so each tarball is built standalone
-   against the *packaged* versions of its siblings (not the source tree):
+2. Build all four packages from their tarballs (cargo resolves the
+   inter-crate dependencies against the other freshly packaged tarballs):
 
    ```sh
-   cargo package -p cartographer-ceres -p cartographer -p cartographer-cloud
-   ls -l target/package/*.crate
+   cargo package -p cartographer-ceres -p cartographer-sim -p cartographer-slam -p cartographer-cloud
    ```
 
-   The `warning: ignoring test/benchmark ...` lines are expected (tests,
-   examples and benches of `cartographer` are not shipped, see below).
-
-3. Dry-run, then publish, in order. Wait until each crate is visible in the
-   index before publishing the next one (recent cargo waits automatically):
+3. Dry-run, then publish, in order (recent cargo waits for each crate to
+   appear in the index before returning):
 
    ```sh
-   cargo publish --dry-run -p cartographer-ceres
-   cargo publish -p cartographer-ceres
-
-   cargo publish --dry-run -p cartographer
-   cargo publish -p cartographer
-
-   cargo publish --dry-run -p cartographer-cloud
-   cargo publish -p cartographer-cloud
+   cargo publish --dry-run -p cartographer-ceres && cargo publish -p cartographer-ceres
+   cargo publish --dry-run -p cartographer-sim   && cargo publish -p cartographer-sim
+   cargo publish --dry-run -p cartographer-slam  && cargo publish -p cartographer-slam
+   cargo publish --dry-run -p cartographer-cloud && cargo publish -p cartographer-cloud
    ```
 
-   (`cargo publish --dry-run -p cartographer` fails until
-   `cartographer-ceres` is on crates.io, because a single-package dry run
-   resolves dependencies from the registry; step 2 is the pre-publish check
-   for it. With cargo >= 1.90, `cargo publish --workspace` publishes all three
-   in order in one command.)
+   `cargo publish --dry-run` of a crate fails until its published
+   dependencies are actually on crates.io; step 2 is the pre-publish check
+   for those.
 
-4. Tag the release: `git tag v0.1.0`.
+## Versions
 
-## Version policy
-
-- All crates share `workspace.package.version` and are released together.
-- Semver, pre-1.0: bump the minor version (`0.1.x` -> `0.2.0`) for any
-  breaking API change in any crate, the patch version otherwise.
-- When bumping, also update the `version = "..."` of the internal
-  dependencies (`cartographer` -> `cartographer-ceres`,
-  `cartographer-cloud` -> `cartographer`).
-- `rust-version` (MSRV) changes are minor bumps.
+All crates share `[workspace.package] version`. Bump it together; the
+inter-crate `version = "..."` requirements must be bumped with it. Use semver:
+breaking API changes bump the minor version while at 0.x.
 
 ## What is in each package
 
 `include` in each `Cargo.toml` is an allowlist:
 
-- `cartographer-ceres`: `src/`, `tests/` (self-contained), `README.md`,
-  `DESIGN.md`, `LICENSE`, `LICENSE-CERES`, `NOTICE`.
-  40 files, 738 KiB (164 KiB compressed).
-- `cartographer`: `src/`, `proto/` (compiled by `build.rs` with the
-  pure-Rust `protox`, no `protoc`), `configuration_files/*.lua`, `build.rs`,
-  `README.md`, `LICENSE`, `NOTICE`.
-  282 files, 2.8 MiB (598 KiB compressed).
-  Tests, examples and benches are **not** shipped: they use the unpublished
-  `cartographer-sim`. Some unit tests inside `src/` also use it, so
-  `cargo test` on the registry tarball does not compile; the library, the
-  binaries and the docs do.
+- `cartographer-ceres`: `src/`, `tests/`, `README.md`, `DESIGN.md`,
+  `LICENSE`, `LICENSE-CERES`, `NOTICE`.
+- `cartographer-sim`: `src/`, `examples/`, `README.md`, `LICENSE`, `NOTICE`.
+- `cartographer-slam`: `src/`, `tests/`, `examples/`, `benches/`, `proto/`
+  (compiled by `build.rs` with the pure-Rust `protox`, no `protoc`),
+  `configuration_files/*.lua`, `build.rs`, `README.md`, `LICENSE`, `NOTICE`.
+  Tests that compare against the C++ source tree skip when it is absent.
 - `cartographer-cloud`: `src/`, `proto/`, `build.rs`, `README.md`,
-  `LICENSE`, `NOTICE`. 67 files, 375 KiB (80 KiB compressed).
+  `LICENSE`, `NOTICE`.
 
-All are far below the 10 MB crates.io limit.
+All are far below the 10 MB crates.io limit (largest: `cartographer-slam`,
+about 0.7 MB compressed).
 
 ## Build-time paths
 
-- `cartographer` declares `links = "cartographer"` and its build script emits
-  `cargo::metadata=proto_dir=<abs path of its proto/>`.
+- `cartographer-slam` declares `links = "cartographer"` and its build script
+  emits `cargo::metadata=proto_dir=<abs path of its proto/>`.
   `cartographer-cloud`'s build script reads it as
-  `DEP_CARTOGRAPHER_PROTO_DIR` to resolve the imported core protos; the
-  in-repo `../cartographer/proto` is only a fallback.
+  `DEP_CARTOGRAPHER_PROTO_DIR`; the in-repo `../cartographer/proto` is only a
+  fallback.
 - `common::config::CONFIGURATION_FILES_DIRECTORY` is
   `$CARGO_MANIFEST_DIR/configuration_files`, which for a registry build is
   the unpacked source in `~/.cargo/registry/src/...` (it is shipped). The
   high-level `SlamConfig::from_lua` additionally falls back to compiled-in
-  copies of the stock Lua files when that directory is gone.
+  copies of the stock Lua files.
 
 ## Licensing
 
 Apache-2.0 (`LICENSE`, copied from upstream Cartographer) with a `NOTICE`
 crediting the Cartographer authors (Google Inc. and other contributors).
 `cartographer-ceres` is `Apache-2.0 AND BSD-3-Clause`: its sources are ported
-from Ceres Solver (New BSD, Google Inc.), whose license text is in
-`crates/ceres/LICENSE-CERES`.
+from Ceres Solver (New BSD), whose license text is in
+`crates/ceres/LICENSE-CERES`. `cartographer-sim` is original code
+(Apache-2.0).
 
-`repository` is intentionally unset (the workspace used to point at the
-upstream C++ repository, which is not where this code lives). Add
-`repository = "..."` to `[workspace.package]` (and `repository.workspace =
-true` to the crates) once the Rust repository is public.
+## Before the first release
+
+- Add `repository = "..."` to `[workspace.package]` (and
+  `repository.workspace = true` in the crates) once the Rust repository is
+  public.
+- Verify the declared `rust-version` (1.88) with that toolchain.

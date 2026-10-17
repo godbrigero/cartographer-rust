@@ -11,10 +11,10 @@ files (`trajectory_builder_2d.lua`, `trajectory_builder_3d.lua`,
 ## Reproduce
 
 ```sh
-cargo bench -p cartographer                          # everything, ~1.5 min on an M3
-cargo bench -p cartographer --bench scan_matching    # one bench target
-cargo bench -p cartographer -- scan_matching_2d/     # filter by id prefix
-cargo bench -p cartographer --no-run                 # build only
+cargo bench -p cartographer-slam                          # everything, ~1.5 min on an M3
+cargo bench -p cartographer-slam --bench scan_matching    # one bench target
+cargo bench -p cartographer-slam -- scan_matching_2d/     # filter by id prefix
+cargo bench -p cartographer-slam --no-run                 # build only
 ```
 
 Every bench uses `sample_size = 10`, 0.5 s warm-up and 2 s measurement time
@@ -185,7 +185,7 @@ matching result (asserted). Throughput is reported in scans/s.
 
 ## Optimizations made while adding the benches
 
-Both keep results bit-for-bit identical (all `cargo test -p cartographer`
+Both keep results bit-for-bit identical (all `cargo test -p cartographer-slam`
 tests pass unchanged, including the simulated local SLAM accuracy tests; a
 new proptest checks the buffer-reusing ray caster against the original).
 

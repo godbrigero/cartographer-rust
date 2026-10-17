@@ -37,14 +37,15 @@ def font(size, bold=False):
     return ImageFont.load_default()
 
 
-def map_render(record, width, height):
+def map_render(record, width, height, azimuth_deg=-62, elevation_deg=38, radius=25.5,
+               target=(0.0, 0.0, 0.7)):
     clouds, path = load(record)
     pts = np.concatenate(clouds)
     pts = pts[pts[:, 2] < 2.75]
     col = colormaps["turbo"](np.clip(pts[:, 2] / 2.75, 0, 1) * 0.9 + 0.05)[:, :3].astype(np.float32)
     ss = 2
-    center = np.array([0.0, 0.0, 0.7])
-    a, elev, radius = np.radians(-62), np.radians(38), 25.5
+    center = np.array(target, float)
+    a, elev = np.radians(azimuth_deg), np.radians(elevation_deg)
     eye = center + radius * np.array([np.cos(a) * np.cos(elev), np.sin(a) * np.cos(elev), np.sin(elev)])
     img = render(pts, col, eye, center, width * ss, height * ss, 46, splat=3)
     p2, d = project(path, eye, center, width * ss, height * ss, 46)
@@ -65,27 +66,19 @@ def stat_list(final):
 
 
 def landscape(record, final, out):
-    """1920x1080 (16:9): matches the videos, for use as a video thumbnail."""
+    """1920x1080 (16:9) video thumbnail: the map render full-bleed with one
+    plain caption. Deliberately no accent colours, stat blocks or gradients."""
     w, h = 1920, 1080
-    img = Image.new("RGB", (w, h), BG)
-    map_w = 1180
-    hero = map_render(record, map_w, h)
-    # Fade the map into the background on its left edge.
-    fade = Image.new("L", (map_w, h), 255)
-    fd = ImageDraw.Draw(fade)
-    for i in range(220):
-        fd.line([(i, 0), (i, h)], fill=int(255 * (i / 220) ** 1.5))
-    img.paste(Image.composite(hero, Image.new("RGB", (map_w, h), BG), fade), (w - map_w, 0))
+    img = map_render(record, w, h, azimuth_deg=-60, elevation_deg=42, radius=27.0,
+                     target=(0.3, -2.2, -1.2))
     d = ImageDraw.Draw(img)
-    x0 = 96
-    d.text((x0, 190), "Google Cartographer,", font=font(76, True), fill=INK)
-    d.text((x0, 276), "rewritten in pure Rust", font=font(76, True), fill=ACCENT)
-    cw, ch, top = 420, 210, 480
-    for i, (big, small) in enumerate(stat_list(final)):
-        cx = x0 + (i % 2) * cw
-        cy = top + (i // 2) * ch
-        d.text((cx, cy), big, font=font(66, True), fill=INK)
-        d.multiline_text((cx, cy + 88), small, font=font(25), fill=INK_2, spacing=7)
+    ate_cm = final["ate_rmse_optimized_m"] * 100
+    x0, y0 = 72, h - 150
+    d.text((x0, y0), "Google Cartographer, ported to pure Rust", font=font(44, True),
+           fill=(235, 235, 235))
+    d.text((x0, y0 + 62),
+           f"3D map from a simulated Unitree L1  ·  {ate_cm:.1f} cm error over 99 m  ·  "
+           "all 338 upstream tests pass", font=font(26), fill=(165, 165, 165))
     img.save(out)
     print("wrote", out)
 

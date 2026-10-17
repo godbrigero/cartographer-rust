@@ -28,8 +28,8 @@ use cartographer_sim::metrics::{Alignment, TimedPose};
 use cartographer_sim::{Dataset, DatasetBuilder, ImuConfig, Lidar3dConfig, Trajectory, World3d};
 use common::{
     AlignWith, Json, Report, RunOptions, constraint_summary, global_node_poses, load_options,
-    occupied_voxels_3d, pairs_with_ground_truth, poses_json, run_trajectory, surface_distance,
-    trajectory_metrics, transform_poses,
+    occupied_voxels_3d, pairs_with_ground_truth, points_json, pose_graph_json, poses_json,
+    run_trajectory, surface_distance, trajectory_metrics, transform_poses,
 };
 
 fn seed(default: u64) -> u64 {
@@ -172,6 +172,12 @@ fn run_scenario(name: &str, dataset: &Dataset, world: &World3d, limits: &Limits)
             ("outliers_over_20cm", surface.outlier_fraction.into()),
         ]),
     );
+    report.section(
+        "pose_graph",
+        pose_graph_json(pose_graph.as_ref(), &metrics.alignment),
+    );
+    // Subsampled occupied voxels (GT frame) for the report's map projections.
+    report.section("map_points", points_json(&voxels, 15_000));
     report.section(
         "estimated_poses_gt_frame",
         poses_json(&transform_poses(&metrics.alignment, &global), 10),

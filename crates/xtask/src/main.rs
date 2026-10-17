@@ -2,6 +2,11 @@
 //!
 //! `cargo run -p xtask -- porting-status [--cpp <dir>] [--json <file>]` regenerates
 //! `PORTING_STATUS.md` from the C++ tree and the Rust sources.
+//!
+//! `cargo run --release -p xtask -- report [...]` generates the visual report
+//! `report/index.html` (see `report/README.md`).
+
+mod report;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -12,7 +17,8 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("porting-status") => {
             let root = workspace_root();
-            let mut cpp = root.join("../cartographer/cartographer");
+            let mut cpp = default_cpp_root(&root)
+                .unwrap_or_else(|| root.join("../cartographer/cartographer"));
             let mut json = None;
             let mut it = args[1..].iter();
             while let Some(a) = it.next() {
@@ -43,8 +49,12 @@ fn main() {
                 t.rust_tests
             );
         }
+        Some("report") => report::run(&workspace_root(), &args[1..]),
         _ => {
-            eprintln!("usage: cargo run -p xtask -- porting-status [--cpp <dir>] [--json <file>]");
+            eprintln!(
+                "usage: cargo run -p xtask -- porting-status [--cpp <dir>] [--json <file>]\n       \
+                 cargo run --release -p xtask -- report [--help]"
+            );
             std::process::exit(2);
         }
     }
@@ -55,6 +65,28 @@ fn workspace_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .unwrap()
+}
+
+/// The C++ `cartographer/cartographer` tree next to the workspace, also
+/// when the workspace is a git worktree (looked up next to the main
+/// checkout).
+fn default_cpp_root(root: &Path) -> Option<PathBuf> {
+    let mut candidates = vec![root.join("../cartographer/cartographer")];
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(root)
+        .output()
+        && out.status.success()
+    {
+        let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        if let Some(main) = common.parent() {
+            candidates.push(main.join("../cartographer/cartographer"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join("mapping").is_dir())
+        .and_then(|p| p.canonicalize().ok())
 }
 
 mod porting_status {
@@ -401,6 +433,122 @@ mod porting_status {
             m.push_str(&format!("| `{f}` | {n} |\n"));
         }
         m
+    }
+
+    /// Aggregates per top-level C++ module (`common`, `mapping`, ...).
+    pub struct ModuleStats {
+        pub name: String,
+        pub units: usize,
+        pub ported_units: usize,
+        pub na_units: usize,
+        pub cpp_tests: usize,
+        pub ported_tests: usize,
+        pub na_tests: usize,
+        pub rust_tests: usize,
+    }
+
+    fn module_entry<'a>(per: &'a mut Vec<ModuleStats>, cpp_unit: &str) -> &'a mut ModuleStats {
+        let name = cpp_unit.split('/').next().unwrap_or(cpp_unit);
+        let i = per.iter().position(|m| m.name == name).unwrap_or_else(|| {
+            per.push(ModuleStats {
+                name: name.to_string(),
+                units: 0,
+                ported_units: 0,
+                na_units: 0,
+                cpp_tests: 0,
+                ported_tests: 0,
+                na_tests: 0,
+                rust_tests: 0,
+            });
+            per.len() - 1
+        });
+        &mut per[i]
+    }
+
+    /// Top-level modules in port order (leaves first).
+    fn sort_modules(per: &mut [ModuleStats]) {
+        const ORDER: [&str; 8] = [
+            "common",
+            "transform",
+            "metrics",
+            "sensor",
+            "mapping",
+            "io",
+            "ground_truth",
+            "cloud",
+        ];
+        per.sort_by_key(|m| {
+            (
+                ORDER
+                    .iter()
+                    .position(|o| *o == m.name)
+                    .unwrap_or(ORDER.len()),
+                m.name.clone(),
+            )
+        });
+    }
+
+    pub fn modules(s: &Status) -> Vec<ModuleStats> {
+        let mut per = Vec::new();
+        for u in &s.units {
+            let m = module_entry(&mut per, &u.cpp);
+            m.units += 1;
+            m.cpp_tests += u.cpp_tests.len();
+            m.rust_tests += u.rust_tests;
+            if u.na {
+                m.na_units += 1;
+                m.na_tests += u.cpp_tests.len();
+            } else {
+                m.ported_units += usize::from(u.ported);
+                m.ported_tests += u.ported_tests;
+            }
+        }
+        sort_modules(&mut per);
+        per
+    }
+
+    /// Module aggregates and totals read back from a generated
+    /// `PORTING_STATUS.md` (when the C++ tree is not available).
+    pub fn from_markdown(md: &str) -> (Vec<ModuleStats>, Totals) {
+        let mut per = Vec::new();
+        let mut t = Totals::default();
+        for line in md.lines() {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cells.len() < 8 || !cells[1].starts_with('`') {
+                continue;
+            }
+            let num = |i: usize| cells[i].parse::<usize>().unwrap_or(0);
+            let (status, tests, matched, rust) = (cells[3], num(4), num(5), num(6));
+            let m = module_entry(&mut per, cells[1].trim_matches('`'));
+            m.units += 1;
+            m.cpp_tests += tests;
+            m.rust_tests += rust;
+            t.units += 1;
+            t.cpp_tests += tests;
+            if status == "N/A" {
+                m.na_units += 1;
+                m.na_tests += tests;
+                t.na_units += 1;
+                t.na_tests += tests;
+            } else {
+                let ported = status.starts_with("done") || status.starts_with("ported");
+                m.ported_units += usize::from(ported);
+                t.ported_units += usize::from(ported);
+            }
+            // Totals count matched tests in N/A units too (as `totals()`).
+            t.ported_tests += matched;
+            if status != "N/A" {
+                m.ported_tests += matched;
+            }
+        }
+        t.rust_tests = md
+            .lines()
+            .find(|l| l.contains("Rust `#[test]` functions"))
+            .and_then(|l| l.split("**").nth(1))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        sort_modules(&mut per);
+        (per, t)
     }
 
     pub fn to_json(s: &Status) -> String {

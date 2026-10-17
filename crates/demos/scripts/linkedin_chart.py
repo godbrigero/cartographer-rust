@@ -85,7 +85,7 @@ def main():
     stats = [
         ("338 / 338", "of the original C++ tests\nported and passing"),
         (f"{ate_cm:.1f} cm", "average position error\nafter a 99 m walk"),
-        ("40×", "faster than real time\non a laptop"),
+        ("2.4 s", "to map 90 s of sensor data\n(Apple M3 Max laptop)"),
         ("0", "C/C++ dependencies:\njust `cargo build`"),
     ]
     cw, ch, gap = 462, 170, 28

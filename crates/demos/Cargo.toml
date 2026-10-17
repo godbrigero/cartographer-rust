@@ -1,0 +1,22 @@
+[package]
+name = "cartographer-demos"
+description = "End-to-end demos of the Cartographer Rust port on recorded (ROS1 bag) data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "cartographer_demos"
+
+[dependencies]
+cartographer = { path = "../cartographer" }
+cartographer-rosbag = { path = "../rosbag" }
+cartographer-sim = { path = "../sim" }
+nalgebra.workspace = true
+clap.workspace = true
+png = "0.18"
+
+[lints]
+workspace = true
